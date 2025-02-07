@@ -16,8 +16,7 @@ Lispium is a language that is designed to be a high-performance lisp for symboli
 ## Build & Run
 
 ```bash
-zig build
-./lispium repl
+zig build run -- repl
 ```
 ## Operations
 
