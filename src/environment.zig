@@ -7,22 +7,22 @@ pub const Error = error{
 };
 
 pub const Env = struct {
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     variables: std.StringHashMap(*Expr),
     builtins: std.StringHashMap(BuiltinFn),
 
-    pub fn init(allocator: *std.mem.Allocator) Env {
+    pub fn init(allocator: std.mem.Allocator) Env {
         return Env{
             .allocator = allocator,
-            .variables = std.StringHashMap(*Expr).init(allocator.*),
-            .builtins = std.StringHashMap(BuiltinFn).init(allocator.*),
+            .variables = std.StringHashMap(*Expr).init(allocator),
+            .builtins = std.StringHashMap(BuiltinFn).init(allocator),
         };
     }
 
     pub fn deinit(self: *Env) void {
         var it = self.variables.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.*.deinit(self.allocator.*);
+            entry.value_ptr.*.deinit(self.allocator);
             self.allocator.destroy(entry.value_ptr.*);
         }
         self.variables.deinit();

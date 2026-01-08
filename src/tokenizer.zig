@@ -1,13 +1,11 @@
 const std = @import("std");
 
 pub const Tokenizer = struct {
-    allocator: *std.mem.Allocator,
     input: []const u8,
     position: usize = 0,
 
-    pub fn init(allocator: *std.mem.Allocator, input: []const u8) Tokenizer {
+    pub fn init(input: []const u8) Tokenizer {
         return Tokenizer{
-            .allocator = allocator,
             .input = input,
             .position = 0,
         };
