@@ -2,71 +2,75 @@
 
 ## A Rare Metal of Algebraic Power
 
-Lispium is a language that is designed to be a high-performance lisp for symbolic algebraic computation.
+Lispium is a language designed to be a high-performance lisp for symbolic algebraic computation.
 
 ## Features
 
 - [x] Symbolic algebraic computation
-- [x] Differentiation and simplification
-- [x] Expression transformation
-- [x] REPL & S-expressions
-- [x] High-performance
-- [x] Easy to use
+- [x] Differentiation and integration
+- [x] Taylor series expansion
+- [x] Equation solving (linear & quadratic)
+- [x] Complex number arithmetic
+- [x] Expression simplification & expansion
+- [x] REPL with S-expressions
+- [x] Zero dependencies, pure Zig
 
 ## Build & Run
 
 ```bash
 zig build run -- repl
 ```
+
 ## Operations
 
-### Addition [x]
+### Arithmetic
 
 ```lisp
-(+ 1 2 3)
+(+ 1 2 3)           ; => 6
+(- 10 3 2)          ; => 5
+(* 2 3 4)           ; => 24
+(/ 10 2)            ; => 5
+(^ 2 10)            ; => 1024
 ```
 
-### Subtraction [x]
+### Functions
 
 ```lisp
-(- 1 2 3)
+(sin x)  (cos x)  (tan x)
+(exp x)  (ln x)   (log x)
+(sqrt x)
 ```
 
-### Multiplication [x]
+### Calculus
 
 ```lisp
-(* 1 2 3)
+(diff (^ x 3) x)              ; => (* 3 (^ x 2))
+(integrate (* 2 x) x)         ; => (^ x 2)
+(taylor (exp x) x 0 4)        ; => (+ 1 x (* 0.5 (^ x 2)) ...)
 ```
 
-### Division [x]
+### Algebra
 
 ```lisp
-(/ 1 2 3)
+(simplify (+ x x x))          ; => (* 3 x)
+(expand (* (+ x 1) (+ x 1)))  ; => (+ (^ x 2) (* 2 x) 1)
+(solve (- (^ x 2) 4) x)       ; => (solutions 2 -2)
+(substitute (+ x y) x 5)      ; => (+ 5 y)
 ```
 
-
-### Differentiation [x]
+### Complex Numbers
 
 ```lisp
-(diff (+ x 1) x)
+(complex 3 4)                 ; => 3+4i
+(magnitude (complex 3 4))     ; => 5
+(conj (complex 3 4))          ; => 3-4i
+(solve (+ (^ x 2) 1) x)       ; => (solutions i -i)
 ```
 
+## Tests
 
-### Simplification [x]
-
-```lisp
-(simplify (+ x 1 x))
+```bash
+zig build test
 ```
 
-### Planned Features [⏳]
-
-- [ ] Integration
-- [ ] Equation solving
-- [ ] Matrix operations
-- [ ] Complex numbers
-- [ ] Trigonometric functions
-- [ ] Series expansion
-- [ ] Plotting
-
-
-
+78 tests, 0 memory leaks.
