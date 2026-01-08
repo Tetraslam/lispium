@@ -12,11 +12,12 @@ pub const Expr = union(enum) {
 
     pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .list => |lst| {
+            .list => |*lst| {
                 for (lst.items) |item| {
                     item.deinit(allocator);
+                    allocator.destroy(item);
                 }
-                lst.deinit();
+                lst.deinit(allocator);
             },
             else => {},
         }
@@ -24,11 +25,11 @@ pub const Expr = union(enum) {
 };
 
 pub const Parser = struct {
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     tokens: std.ArrayList([]const u8),
     position: usize = 0,
 
-    pub fn init(allocator: *std.mem.Allocator, tokens: std.ArrayList([]const u8)) Parser {
+    pub fn init(allocator: std.mem.Allocator, tokens: std.ArrayList([]const u8)) Parser {
         return Parser{
             .allocator = allocator,
             .tokens = tokens,
@@ -51,7 +52,14 @@ pub const Parser = struct {
     pub fn parseExpr(self: *Parser) !*Expr {
         const token = self.next() orelse return Error.UnexpectedEOF;
         if (std.mem.eql(u8, token, "(")) {
-            var list = std.ArrayList(*Expr).init(self.allocator.*);
+            var list: std.ArrayList(*Expr) = .empty;
+            errdefer {
+                for (list.items) |item| {
+                    item.deinit(self.allocator);
+                    self.allocator.destroy(item);
+                }
+                list.deinit(self.allocator);
+            }
             while (true) {
                 const peek_token = self.peek();
                 if (peek_token) |p| {
@@ -63,7 +71,7 @@ pub const Parser = struct {
                     return Error.UnexpectedEOF;
                 }
                 const expr = try self.parseExpr();
-                try list.append(expr);
+                try list.append(self.allocator, expr);
             }
             const result = try self.allocator.create(Expr);
             result.* = .{ .list = list };
