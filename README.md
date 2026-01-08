@@ -73,4 +73,10 @@ zig build run -- repl
 zig build test
 ```
 
+For verbose output showing all test names:
+
+```bash
+zig build test --summary all
+```
+
 78 tests, 0 memory leaks.
