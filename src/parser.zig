@@ -8,7 +8,17 @@ pub const Error = error{
 pub const Expr = union(enum) {
     number: f64,
     symbol: []const u8,
+    /// Owned symbol: a symbol whose memory should be freed on deinit
+    owned_symbol: []const u8,
     list: std.ArrayList(*Expr),
+    /// Lambda: stores parameter names and body expression
+    /// Format: lambda{ .params = ["x", "y"], .body = <expr> }
+    lambda: Lambda,
+
+    pub const Lambda = struct {
+        params: std.ArrayList([]const u8),
+        body: *Expr,
+    };
 
     pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -18,6 +28,14 @@ pub const Expr = union(enum) {
                     allocator.destroy(item);
                 }
                 lst.deinit(allocator);
+            },
+            .lambda => |*lam| {
+                lam.body.deinit(allocator);
+                allocator.destroy(lam.body);
+                lam.params.deinit(allocator);
+            },
+            .owned_symbol => |s| {
+                allocator.free(s);
             },
             else => {},
         }
