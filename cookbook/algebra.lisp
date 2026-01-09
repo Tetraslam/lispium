@@ -1,0 +1,55 @@
+; Lispium Cookbook: Algebra Examples
+; ===================================
+
+; Simplification
+; --------------
+; Automatic simplification of algebraic expressions
+(simplify (+ x 0))          ; => x
+(simplify (* x 1))          ; => x
+(simplify (* x 0))          ; => 0
+(simplify (+ x x))          ; => (* 2 x)
+(simplify (^ x 0))          ; => 1
+(simplify (^ x 1))          ; => x
+
+; Nested simplification
+(simplify (+ (* 2 x) (* 3 x)))  ; => (* 5 x)
+
+; Expansion
+; ---------
+; Expand products and powers
+(expand (* (+ x 1) (+ x 2)))    ; => (+ (^ x 2) (* 3 x) 2)
+(expand (^ (+ x 1) 2))          ; => (+ (^ x 2) (* 2 x) 1)
+(expand (^ (+ x y) 2))          ; => (+ (^ x 2) (* 2 x y) (^ y 2))
+
+; Factoring
+; ---------
+; Factor polynomials (currently supports rational roots)
+(factor (+ (^ x 2) (* -1 1)))   ; => (* (+ x 1) (+ x -1))  [x² - 1]
+(factor (+ (^ x 2) (* 3 x) 2))  ; => (* (+ x 1) (+ x 2))   [x² + 3x + 2]
+
+; Collect Terms
+; -------------
+; Group terms by powers of a variable
+(collect (+ (* 2 x) (* 3 x) 5) x)  ; => (+ (* 5 x) 5)
+
+; Substitution
+; ------------
+; Replace variables with values or expressions
+(substitute (+ x y) x 3)     ; => (+ 3 y)
+(substitute (^ x 2) x (+ a 1))  ; => (^ (+ a 1) 2)
+
+; Solving Equations
+; -----------------
+; Solve for a variable (finds zeros of expression)
+(solve (+ x 5) x)            ; => -5  (x + 5 = 0 → x = -5)
+(solve (+ (^ x 2) (* -4 1)) x)  ; Quadratic: x² - 4 = 0
+
+; Rewrite Rules
+; -------------
+; Define custom transformation rules
+(define double-angle (rule (sin (* 2 x)) (* 2 (sin x) (cos x))))
+(rewrite (sin (* 2 y)) (list double-angle))
+
+; Pattern matching with rules
+(define pythagorean (rule (+ (^ (sin x) 2) (^ (cos x) 2)) 1))
+
