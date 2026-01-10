@@ -24,8 +24,8 @@
 ; Factoring
 ; ---------
 ; Factor polynomials (currently supports rational roots)
-(factor (+ (^ x 2) (* -1 1)))   ; => (* (+ x 1) (+ x -1))  [x² - 1]
-(factor (+ (^ x 2) (* 3 x) 2))  ; => (* (+ x 1) (+ x 2))   [x² + 3x + 2]
+(factor (+ (^ x 2) (* -1 1)) x)   ; => (* (- x 1) (+ x 1))  [x² - 1]
+(factor (+ (^ x 2) (* 3 x) 2) x)  ; => (* (+ x 1) (+ x 2))   [x² + 3x + 2]
 
 ; Collect Terms
 ; -------------
@@ -46,10 +46,11 @@
 
 ; Rewrite Rules
 ; -------------
-; Define custom transformation rules
-(define double-angle (rule (sin (* 2 x)) (* 2 (sin x) (cos x))))
-(rewrite (sin (* 2 y)) (list double-angle))
+; Define custom transformation rules using pattern variables (?x)
+; Rules are stored in the environment and applied by rewrite
+(rule (sin (* 2 ?x)) (* 2 (sin ?x) (cos ?x)))  ; Double angle formula
+(rewrite (sin (* 2 y)))                          ; Apply rules
 
 ; Pattern matching with rules
-(define pythagorean (rule (+ (^ (sin x) 2) (^ (cos x) 2)) 1))
+(rule (+ (^ (sin ?x) 2) (^ (cos ?x) 2)) 1)      ; Pythagorean identity
 

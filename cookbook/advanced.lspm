@@ -1,0 +1,195 @@
+; Advanced Features
+; =================
+; Special functions, transforms, interpolation, and more
+
+; ================================
+; Special Functions
+; ================================
+
+; Gamma function - extends factorial to real/complex numbers
+(gamma 5)                 ; => 24 (Gamma(n) = (n-1)!)
+(gamma 3.5)               ; => 3.323...
+
+; Beta function - related to gamma
+(beta 2 3)                ; => 0.0833... = Gamma(2)*Gamma(3)/Gamma(5)
+
+; Bessel functions
+(besselj 0 1)             ; => 0.7651... (Bessel J_0(1))
+(bessely 0 1)             ; => 0.0882... (Bessel Y_0(1))
+
+; Error function (erf) and complementary error function (erfc)
+(erf 1)                   ; => 0.8427...
+(erfc 1)                  ; => 0.1572... = 1 - erf(1)
+
+; Digamma function (logarithmic derivative of gamma)
+(digamma 1)               ; => -0.5772... (negative Euler-Mascheroni constant)
+
+; ================================
+; Inverse Trigonometric Functions
+; ================================
+
+(asin 0.5)                ; => 0.5235... (pi/6)
+(acos 0.5)                ; => 1.0471... (pi/3)
+(atan 1)                  ; => 0.7853... (pi/4)
+(atan2 1 1)               ; => 0.7853... (angle of point (1,1))
+
+; ================================
+; Hyperbolic Functions
+; ================================
+
+(sinh 1)                  ; => 1.1752...
+(cosh 1)                  ; => 1.5430...
+(tanh 1)                  ; => 0.7615...
+
+; Inverse hyperbolic
+(asinh 1)                 ; => 0.8813...
+(acosh 2)                 ; => 1.3169...
+(atanh 0.5)               ; => 0.5493...
+
+; ================================
+; Differential Equations
+; ================================
+
+; Solve dy/dx = y  =>  y = C*e^x
+(dsolve (- (diff y x) y) y x)
+
+; First-order linear ODEs
+(dsolve (- (diff y x) (* 2 y)) y x)  ; dy/dx = 2y
+
+; ================================
+; Fourier and Laplace Transforms
+; ================================
+
+; Fourier series expansion of x^2
+(fourier (^ x 2) x 3)     ; First 3 terms
+
+; Laplace transform: L{e^(-t)} = 1/(s+1)
+(laplace (exp (* -1 t)) t s)
+
+; Inverse Laplace: L^{-1}{1/s} = 1
+(inv-laplace (/ 1 s) s t)
+
+; ================================
+; Polynomial Interpolation
+; ================================
+
+; Lagrange interpolation through points
+(lagrange (list (vector 0 1) (vector 1 2) (vector 2 5)) x)
+
+; Newton interpolation
+(newton-interp (list (vector 0 1) (vector 1 2)) x)
+
+; ================================
+; Numerical Root Finding
+; ================================
+
+; Newton-Raphson method: find sqrt(2)
+(newton-raphson (- (* x x) 2) x 1 0.001)  ; => 1.414...
+
+; Bisection method
+(bisection (- (* x x) 2) x 1 2 0.001)     ; => 1.414...
+
+; ================================
+; Continued Fractions
+; ================================
+
+; Convert decimal to continued fraction
+(to-cf 3.14159)           ; => (cf 3 7 15 1 ...)
+
+; Convert back
+(from-cf (cf 3 7 15 1))   ; => 3.14159...
+
+; Rational to continued fraction
+(cf-rational 22 7)        ; => (cf 3 7)
+
+; Get nth convergent
+(cf-convergent (cf 3 7 15) 1)  ; => 22/7
+
+; ================================
+; Tensor Operations
+; ================================
+
+; Create tensors
+(tensor (vector 1 2 3))   ; 1D tensor
+
+; Tensor rank
+(tensor-rank (vector 1 2 3))  ; => 1
+
+; Outer product
+(tensor-product (vector 1 2) (vector 3 4))
+
+; Contraction
+(tensor-contract (matrix (1 2) (3 4)) 0 1)
+
+; ================================
+; List Operations
+; ================================
+
+; Basic list operations
+(car (list 1 2 3))        ; => 1
+(cdr (list 1 2 3))        ; => (list 2 3)
+(cons 0 (list 1 2 3))     ; => (list 0 1 2 3)
+(length (list 1 2 3))     ; => 3
+(nth (list 10 20 30) 1)   ; => 20
+
+; Higher-order functions
+(define (square x) (* x x))
+(map square (list 1 2 3))      ; => (list 1 4 9)
+(filter (lambda (x) (> x 1)) (list 1 2 3))  ; => (list 2 3)
+(reduce + 0 (list 1 2 3 4))    ; => 10
+
+; Utility functions
+(append (list 1 2) (list 3 4)) ; => (list 1 2 3 4)
+(reverse (list 1 2 3))         ; => (list 3 2 1)
+(range 5)                      ; => (list 0 1 2 3 4)
+(range 1 5)                    ; => (list 1 2 3 4)
+(range 0 10 2)                 ; => (list 0 2 4 6 8)
+
+; ================================
+; Memoization
+; ================================
+
+; Cache expensive computations
+(memoize (factorial 100))
+
+; Check cache size
+(memo-stats)              ; => number of cached entries
+
+; Clear cache
+(memo-clear)
+
+; ================================
+; Combinatorics
+; ================================
+
+(factorial 10)            ; => 3628800
+(binomial 10 3)           ; => 120
+(permutations 5 3)        ; => 60
+(combinations 5 3)        ; => 10
+
+; ================================
+; Statistics
+; ================================
+
+(mean 1 2 3 4 5)          ; => 3
+(variance 1 2 3 4 5)      ; => 2
+(stddev 1 2 3 4 5)        ; => 1.414...
+(median 1 2 3 4 5)        ; => 3
+(min 3 1 4 1 5)           ; => 1
+(max 3 1 4 1 5)           ; => 5
+
+; ================================
+; Vector Calculus
+; ================================
+
+; Gradient of scalar field
+(gradient (+ (^ x 2) (^ y 2)) (vector x y))  ; => (vector (* 2 x) (* 2 y))
+
+; Divergence of vector field
+(divergence (vector x y) (vector x y))        ; => 2
+
+; Curl of vector field (3D)
+(curl (vector y (* -1 x) 0) (vector x y z))  ; => (vector 0 0 -2)
+
+; Laplacian
+(laplacian (^ x 2) (vector x))               ; => 2

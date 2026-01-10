@@ -86,6 +86,16 @@ pub fn setupEnv(allocator: std.mem.Allocator) !Env {
     try env.putBuiltin("sin", builtins.builtin_sin);
     try env.putBuiltin("cos", builtins.builtin_cos);
     try env.putBuiltin("tan", builtins.builtin_tan);
+    try env.putBuiltin("asin", builtins.builtin_asin);
+    try env.putBuiltin("acos", builtins.builtin_acos);
+    try env.putBuiltin("atan", builtins.builtin_atan);
+    try env.putBuiltin("atan2", builtins.builtin_atan2);
+    try env.putBuiltin("sinh", builtins.builtin_sinh);
+    try env.putBuiltin("cosh", builtins.builtin_cosh);
+    try env.putBuiltin("tanh", builtins.builtin_tanh);
+    try env.putBuiltin("asinh", builtins.builtin_asinh);
+    try env.putBuiltin("acosh", builtins.builtin_acosh);
+    try env.putBuiltin("atanh", builtins.builtin_atanh);
     try env.putBuiltin("exp", builtins.builtin_exp);
     try env.putBuiltin("ln", builtins.builtin_ln);
     try env.putBuiltin("log", builtins.builtin_log);
@@ -181,5 +191,64 @@ pub fn setupEnv(allocator: std.mem.Allocator) !Env {
     try env.putBuiltin("gf-neg", builtins.builtin_gf_neg);
     // Output export
     try env.putBuiltin("latex", builtins.builtin_latex);
+    // Special functions
+    try env.putBuiltin("gamma", builtins.builtin_gamma);
+    try env.putBuiltin("beta", builtins.builtin_beta);
+    try env.putBuiltin("erf", builtins.builtin_erf);
+    try env.putBuiltin("erfc", builtins.builtin_erfc);
+    try env.putBuiltin("besselj", builtins.builtin_besselj);
+    try env.putBuiltin("bessely", builtins.builtin_bessely);
+    try env.putBuiltin("digamma", builtins.builtin_digamma);
+    // Differential equations
+    try env.putBuiltin("dsolve", builtins.builtin_dsolve);
+    // Fourier & Laplace transforms
+    try env.putBuiltin("fourier", builtins.builtin_fourier);
+    try env.putBuiltin("laplace", builtins.builtin_laplace);
+    try env.putBuiltin("inv-laplace", builtins.builtin_inv_laplace);
+    // Tensor operations
+    try env.putBuiltin("tensor", builtins.builtin_tensor);
+    try env.putBuiltin("tensor-rank", builtins.builtin_tensor_rank);
+    try env.putBuiltin("tensor-contract", builtins.builtin_tensor_contract);
+    try env.putBuiltin("tensor-product", builtins.builtin_tensor_product);
+    // Polynomial interpolation
+    try env.putBuiltin("lagrange", builtins.builtin_lagrange);
+    try env.putBuiltin("newton-interp", builtins.builtin_newton_interp);
+    // Numerical root finding
+    try env.putBuiltin("newton-raphson", builtins.builtin_newton_raphson);
+    try env.putBuiltin("bisection", builtins.builtin_bisection);
+    // Continued fractions
+    try env.putBuiltin("to-cf", builtins.builtin_to_cf);
+    try env.putBuiltin("from-cf", builtins.builtin_from_cf);
+    try env.putBuiltin("cf-convergent", builtins.builtin_cf_convergent);
+    try env.putBuiltin("cf-rational", builtins.builtin_cf_rational);
+    // List operations
+    try env.putBuiltin("car", builtins.builtin_car);
+    try env.putBuiltin("cdr", builtins.builtin_cdr);
+    try env.putBuiltin("cons", builtins.builtin_cons);
+    try env.putBuiltin("list", builtins.builtin_list_fn);
+    try env.putBuiltin("length", builtins.builtin_length);
+    try env.putBuiltin("nth", builtins.builtin_nth);
+    try env.putBuiltin("map", builtins.builtin_map);
+    try env.putBuiltin("filter", builtins.builtin_filter);
+    try env.putBuiltin("reduce", builtins.builtin_reduce);
+    try env.putBuiltin("append", builtins.builtin_append);
+    try env.putBuiltin("reverse", builtins.builtin_reverse);
+    try env.putBuiltin("range", builtins.builtin_range);
+
+    // Memoization
+    try env.putBuiltin("memoize", builtins.builtin_memoize);
+    try env.putBuiltin("memo-clear", builtins.builtin_memo_clear);
+    try env.putBuiltin("memo-stats", builtins.builtin_memo_stats);
+
+    // Plotting
+    try env.putBuiltin("plot-ascii", builtins.builtin_plot_ascii);
+    try env.putBuiltin("plot-svg", builtins.builtin_plot_svg);
+    try env.putBuiltin("plot-points", builtins.builtin_plot_points);
+
+    // Step-by-step solutions
+    try env.putBuiltin("diff-steps", builtins.builtin_diff_steps);
+    try env.putBuiltin("integrate-steps", builtins.builtin_integrate_steps);
+    try env.putBuiltin("simplify-steps", builtins.builtin_simplify_steps);
+    try env.putBuiltin("solve-steps", builtins.builtin_solve_steps);
     return env;
 }

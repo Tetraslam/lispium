@@ -30,6 +30,18 @@ comptime {
     _ = @import("tests/quaternion.zig");
     _ = @import("tests/finite_field.zig");
     _ = @import("tests/latex.zig");
+    _ = @import("tests/trig_hyperbolic.zig");
+    _ = @import("tests/special_functions.zig");
+    _ = @import("tests/dsolve.zig");
+    _ = @import("tests/fourier_laplace.zig");
+    _ = @import("tests/tensor.zig");
+    _ = @import("tests/interpolation.zig");
+    _ = @import("tests/rootfinding.zig");
+    _ = @import("tests/continued_fractions.zig");
+    _ = @import("tests/list_ops.zig");
+    _ = @import("tests/memoization.zig");
+    _ = @import("tests/plotting.zig");
+    _ = @import("tests/steps.zig");
 }
 
 // Re-export helpers for any external use

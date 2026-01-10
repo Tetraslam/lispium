@@ -28,6 +28,18 @@ Lispium is a language designed to be a high-performance lisp for symbolic algebr
 - [x] Quaternions
 - [x] Finite fields GF(p)
 - [x] LaTeX export
+- [x] Inverse trig & hyperbolic functions
+- [x] Special functions (gamma, beta, bessel, erf)
+- [x] Differential equation solver (dsolve)
+- [x] Fourier series & Laplace transforms
+- [x] Tensor operations (rank, contraction, product)
+- [x] Polynomial interpolation (Lagrange, Newton)
+- [x] Numerical root finding (Newton-Raphson, bisection)
+- [x] Continued fractions
+- [x] List operations (car, cdr, cons, map, filter, reduce)
+- [x] Memoization
+- [x] Plotting (ASCII & SVG)
+- [x] Step-by-step solutions
 - [x] REPL with S-expressions
 - [x] Zero dependencies, pure Zig
 
@@ -53,8 +65,20 @@ zig build run -- repl
 
 ```lisp
 (sin x)  (cos x)  (tan x)
+(asin x) (acos x) (atan x) (atan2 y x)
+(sinh x) (cosh x) (tanh x)
+(asinh x) (acosh x) (atanh x)
 (exp x)  (ln x)   (log x)
 (sqrt x)
+```
+
+### Special Functions
+
+```lisp
+(gamma 5)                 ; => 24 (Gamma function)
+(beta 2 3)                ; => 0.0833... (Beta function)
+(bessel 0 1)              ; => 0.7651... (Bessel J_n)
+(erf 1)                   ; => 0.8427... (Error function)
 ```
 
 ### Calculus
@@ -286,4 +310,89 @@ For verbose output showing all test names:
 zig build test --summary all
 ```
 
-319 tests, 0 memory leaks.
+453 tests, 0 memory leaks.
+
+## New Features
+
+### Differential Equations
+
+```lisp
+(dsolve (- (diff y x) y) y x)  ; dy/dx = y => y = C*e^x
+```
+
+### Fourier Series & Laplace Transforms
+
+```lisp
+(fourier-series (^ x 2) x 3)   ; Fourier series approximation
+(laplace (exp (* -1 t)) t s)   ; => (/ 1 (+ s 1))
+(inverse-laplace (/ 1 s) s t)  ; => 1
+```
+
+### Tensor Operations
+
+```lisp
+(tensor (vector 1 2 3))           ; 1D tensor
+(tensor-rank (vector 1 2 3))      ; => 1
+(tensor-contract T 0 1)           ; Contract indices
+(tensor-product T1 T2)            ; Outer product
+```
+
+### Polynomial Interpolation
+
+```lisp
+(lagrange (vector (vector 0 1) (vector 1 2) (vector 2 5)) x)
+(newton-interp (vector (vector 0 1) (vector 1 2)) x)
+```
+
+### Numerical Root Finding
+
+```lisp
+(newton-raphson (- (* x x) 2) x 1 0.001)  ; sqrt(2) ≈ 1.414
+(bisection (- (* x x) 2) x 1 2 0.001)     ; sqrt(2)
+```
+
+### Continued Fractions
+
+```lisp
+(to-cf 3.14159)                   ; => (cf 3 7 15 1 ...)
+(from-cf (cf 3 7 15 1))           ; => 3.14159...
+(cf-rational 22 7)                ; => (cf 3 7)
+(cf-convergent (cf 3 7 15) 1)     ; => (rational 22 7)
+```
+
+### List Operations
+
+```lisp
+(car (list 1 2 3))                ; => 1
+(cdr (list 1 2 3))                ; => (list 2 3)
+(cons 1 (list 2 3))               ; => (list 1 2 3)
+(map (lambda (x) (* x 2)) (list 1 2 3))  ; => (list 2 4 6)
+(filter (lambda (x) (> x 1)) (list 1 2 3))  ; => (list 2 3)
+(reduce + 0 (list 1 2 3))         ; => 6
+(range 5)                         ; => (list 0 1 2 3 4)
+```
+
+### Memoization
+
+```lisp
+(memoize (fib 30))                ; Cache expensive computation
+(memo-clear)                      ; Clear cache
+(memo-stats)                      ; => number of cached items
+```
+
+### Plotting
+
+```lisp
+(plot-ascii (* x x) -2 2)         ; ASCII plot of x²
+(plot-svg (sin x) 0 6.28)         ; SVG plot of sin(x)
+(plot-points (list (vector 0 0) (vector 1 1) (vector 2 4)))
+```
+
+### Step-by-Step Solutions
+
+```lisp
+(diff-steps (^ x 3) x)            ; Shows differentiation steps
+(integrate-steps (sin x) x)       ; Shows integration steps
+(simplify-steps (+ x x x))        ; Shows simplification steps
+(solve-steps (- (* x x) 4) x)     ; Shows equation solving steps
+```

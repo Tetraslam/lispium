@@ -98,6 +98,28 @@ fn makeSymbol(allocator: std.mem.Allocator, s: []const u8) SimplifyError!*Expr {
     return result;
 }
 
+/// Checks if an expression contains a given variable
+pub fn containsVariable(expr: *const Expr, var_name: []const u8) bool {
+    switch (expr.*) {
+        .number => return false,
+        .symbol => |s| return std.mem.eql(u8, s, var_name),
+        .owned_symbol => |s| return std.mem.eql(u8, s, var_name),
+        .list => |lst| {
+            for (lst.items) |item| {
+                if (containsVariable(item, var_name)) return true;
+            }
+            return false;
+        },
+        .lambda => |lam| {
+            // Check if var_name is bound by the lambda
+            for (lam.params.items) |param| {
+                if (std.mem.eql(u8, param, var_name)) return false;
+            }
+            return containsVariable(lam.body, var_name);
+        },
+    }
+}
+
 fn makeList(allocator: std.mem.Allocator, items: []const *Expr) SimplifyError!*Expr {
     var list: std.ArrayList(*Expr) = .empty;
     errdefer list.deinit(allocator);
@@ -856,6 +878,170 @@ fn diffInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allo
                     const u_ln_base = try makeBinOp(allocator, "*", u_copy, ln_base);
                     const one = try makeNumber(allocator, 1);
                     const inv = try makeBinOp(allocator, "/", one, u_ln_base);
+
+                    return try makeBinOp(allocator, "*", inv, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "asin")) {
+                // d/dx(asin(u)) = 1/sqrt(1-u^2) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    // 1 - u^2
+                    const one = try makeNumber(allocator, 1);
+                    const u_copy = try copyExpr(u, allocator);
+                    const two = try makeNumber(allocator, 2);
+                    const u_sq = try makeBinOp(allocator, "^", u_copy, two);
+                    const one_minus_u_sq = try makeBinOp(allocator, "-", one, u_sq);
+
+                    // sqrt(1 - u^2)
+                    const half = try makeNumber(allocator, 0.5);
+                    const sqrt_term = try makeBinOp(allocator, "^", one_minus_u_sq, half);
+
+                    // 1 / sqrt(1 - u^2)
+                    const one2 = try makeNumber(allocator, 1);
+                    const inv = try makeBinOp(allocator, "/", one2, sqrt_term);
+
+                    return try makeBinOp(allocator, "*", inv, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "acos")) {
+                // d/dx(acos(u)) = -1/sqrt(1-u^2) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    // 1 - u^2
+                    const one = try makeNumber(allocator, 1);
+                    const u_copy = try copyExpr(u, allocator);
+                    const two = try makeNumber(allocator, 2);
+                    const u_sq = try makeBinOp(allocator, "^", u_copy, two);
+                    const one_minus_u_sq = try makeBinOp(allocator, "-", one, u_sq);
+
+                    // sqrt(1 - u^2)
+                    const half = try makeNumber(allocator, 0.5);
+                    const sqrt_term = try makeBinOp(allocator, "^", one_minus_u_sq, half);
+
+                    // -1 / sqrt(1 - u^2)
+                    const neg_one = try makeNumber(allocator, -1);
+                    const inv = try makeBinOp(allocator, "/", neg_one, sqrt_term);
+
+                    return try makeBinOp(allocator, "*", inv, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "atan")) {
+                // d/dx(atan(u)) = 1/(1+u^2) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    // 1 + u^2
+                    const one = try makeNumber(allocator, 1);
+                    const u_copy = try copyExpr(u, allocator);
+                    const two = try makeNumber(allocator, 2);
+                    const u_sq = try makeBinOp(allocator, "^", u_copy, two);
+                    const one_plus_u_sq = try makeBinOp(allocator, "+", one, u_sq);
+
+                    // 1 / (1 + u^2)
+                    const one2 = try makeNumber(allocator, 1);
+                    const inv = try makeBinOp(allocator, "/", one2, one_plus_u_sq);
+
+                    return try makeBinOp(allocator, "*", inv, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "sinh")) {
+                // d/dx(sinh(u)) = cosh(u) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const cosh_op = try makeSymbol(allocator, "cosh");
+                    const u_copy = try copyExpr(u, allocator);
+                    const cosh_u = try makeList(allocator, &[_]*Expr{ cosh_op, u_copy });
+
+                    return try makeBinOp(allocator, "*", cosh_u, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "cosh")) {
+                // d/dx(cosh(u)) = sinh(u) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const sinh_op = try makeSymbol(allocator, "sinh");
+                    const u_copy = try copyExpr(u, allocator);
+                    const sinh_u = try makeList(allocator, &[_]*Expr{ sinh_op, u_copy });
+
+                    return try makeBinOp(allocator, "*", sinh_u, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "tanh")) {
+                // d/dx(tanh(u)) = sech^2(u) * du/dx = 1/cosh^2(u) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const cosh_op = try makeSymbol(allocator, "cosh");
+                    const u_copy = try copyExpr(u, allocator);
+                    const cosh_u = try makeList(allocator, &[_]*Expr{ cosh_op, u_copy });
+
+                    const two = try makeNumber(allocator, 2);
+                    const cosh_sq = try makeBinOp(allocator, "^", cosh_u, two);
+
+                    const one = try makeNumber(allocator, 1);
+                    const sech_sq = try makeBinOp(allocator, "/", one, cosh_sq);
+
+                    return try makeBinOp(allocator, "*", sech_sq, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "asinh")) {
+                // d/dx(asinh(u)) = 1/sqrt(u^2+1) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const u_copy = try copyExpr(u, allocator);
+                    const two = try makeNumber(allocator, 2);
+                    const u_sq = try makeBinOp(allocator, "^", u_copy, two);
+                    const one = try makeNumber(allocator, 1);
+                    const u_sq_plus_one = try makeBinOp(allocator, "+", u_sq, one);
+
+                    const half = try makeNumber(allocator, 0.5);
+                    const sqrt_term = try makeBinOp(allocator, "^", u_sq_plus_one, half);
+
+                    const one2 = try makeNumber(allocator, 1);
+                    const inv = try makeBinOp(allocator, "/", one2, sqrt_term);
+
+                    return try makeBinOp(allocator, "*", inv, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "acosh")) {
+                // d/dx(acosh(u)) = 1/sqrt(u^2-1) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const u_copy = try copyExpr(u, allocator);
+                    const two = try makeNumber(allocator, 2);
+                    const u_sq = try makeBinOp(allocator, "^", u_copy, two);
+                    const one = try makeNumber(allocator, 1);
+                    const u_sq_minus_one = try makeBinOp(allocator, "-", u_sq, one);
+
+                    const half = try makeNumber(allocator, 0.5);
+                    const sqrt_term = try makeBinOp(allocator, "^", u_sq_minus_one, half);
+
+                    const one2 = try makeNumber(allocator, 1);
+                    const inv = try makeBinOp(allocator, "/", one2, sqrt_term);
+
+                    return try makeBinOp(allocator, "*", inv, du);
+                }
+            } else if (std.mem.eql(u8, op.symbol, "atanh")) {
+                // d/dx(atanh(u)) = 1/(1-u^2) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const one = try makeNumber(allocator, 1);
+                    const u_copy = try copyExpr(u, allocator);
+                    const two = try makeNumber(allocator, 2);
+                    const u_sq = try makeBinOp(allocator, "^", u_copy, two);
+                    const one_minus_u_sq = try makeBinOp(allocator, "-", one, u_sq);
+
+                    const one2 = try makeNumber(allocator, 1);
+                    const inv = try makeBinOp(allocator, "/", one2, one_minus_u_sq);
 
                     return try makeBinOp(allocator, "*", inv, du);
                 }
