@@ -60,12 +60,17 @@ pub const Env = struct {
             self.allocator.destroy(rep);
         }
         self.rules.deinit(self.allocator);
+        // Free owned assumption keys
+        var assumptions_it = self.assumptions.iterator();
+        while (assumptions_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
         self.assumptions.deinit();
     }
 
     pub fn assume(self: *Env, symbol: []const u8, assumption: Assumption) !void {
         if (self.assumptions.get(symbol)) |existing| {
-            // Merge assumptions
+            // Merge assumptions - key already owned
             var merged = existing;
             if (assumption.positive) merged.positive = true;
             if (assumption.negative) merged.negative = true;
@@ -76,7 +81,9 @@ pub const Env = struct {
             if (assumption.odd) merged.odd = true;
             try self.assumptions.put(symbol, merged);
         } else {
-            try self.assumptions.put(symbol, assumption);
+            // Duplicate the key so we own it
+            const owned_key = try self.allocator.dupe(u8, symbol);
+            try self.assumptions.put(owned_key, assumption);
         }
     }
 

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.0
+
+      - name: Build
+        run: zig build
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build release
+        run: zig build -Doptimize=ReleaseSafe
+
+  # Quick sanity check that cross-compilation works
+  cross-compile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.0
+
+      - name: Cross-compile for all targets
+        run: |
+          zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
+          zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe
+          zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
+          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
+          zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe

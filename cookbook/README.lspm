@@ -1,0 +1,63 @@
+; Lispium Cookbook
+; ================
+; A collection of examples demonstrating Lispium's capabilities
+;
+; Files in this cookbook:
+; -----------------------
+; calculus.lisp      - Differentiation, integration, Taylor series, limits
+; linear_algebra.lisp - Vectors, matrices, eigenvalues, linear systems
+; algebra.lisp       - Simplification, expansion, factoring, solving
+; polynomials.lisp   - Polynomial division, GCD, LCM, partial fractions
+; number_theory.lisp - Modular arithmetic, GCD, LCM, modular exponentiation
+; boolean.lisp       - Boolean operations: and, or, not, xor, implies
+; complex.lisp       - Complex numbers, conjugate, magnitude, argument
+; assumptions.lisp   - Setting and querying variable assumptions
+; lambda.lisp        - Functions, recursion, higher-order functions
+; advanced.lisp      - Special functions, transforms, interpolation
+; plotting.lisp      - ASCII and SVG plotting examples
+;
+; Quick Reference
+; ---------------
+; Arithmetic:       + - * / ^ mod
+; Comparison:       = < >
+; Trigonometric:    sin cos tan asin acos atan atan2
+; Hyperbolic:       sinh cosh tanh asinh acosh atanh
+; Transcendental:   exp ln log sqrt
+; Special Funcs:    gamma beta besselj bessely erf erfc digamma
+; Calculus:         diff integrate taylor limit dsolve
+; Algebra:          simplify expand factor solve collect substitute
+; Polynomials:      coeffs polydiv polygcd polylcm partial-fractions
+; Interpolation:    lagrange newton-interp
+; Root Finding:     newton-raphson bisection
+; Linear Algebra:   vector dot cross norm matrix det transpose trace
+;                   matmul inv eigenvalues eigenvectors linsolve lu charpoly
+; Vector Calculus:  gradient divergence curl laplacian
+; Tensors:          tensor tensor-rank tensor-contract tensor-product
+; Number Theory:    gcd lcm modpow prime? factorize totient extgcd crt
+; Combinatorics:    factorial binomial permutations combinations
+; Statistics:       mean variance stddev median min max
+; Cont. Fractions:  to-cf from-cf cf-rational cf-convergent
+; Lists:            car cdr cons list length nth map filter reduce
+;                   append reverse range
+; Transforms:       fourier laplace inv-laplace
+; Boolean:          and or not xor implies
+; Complex:          complex real imag conj magnitude arg
+; Quaternions:      quat quat+ quat* quat-conj quat-norm quat-inv
+; Finite Fields:    gf gf+ gf- gf* gf/ gf^ gf-inv
+; Functions:        lambda define letrec if let
+; Assumptions:      assume is?
+; Rewriting:        rule rewrite
+; Memoization:      memoize memo-clear memo-stats
+; Plotting:         plot-ascii plot-svg plot-points
+; Step-by-step:     diff-steps integrate-steps simplify-steps solve-steps
+; Export:           latex
+;
+; Getting Started
+; ---------------
+; Run the REPL: zig build run -- repl
+; Try: (+ 1 2)
+; Try: (diff (^ x 3) x)
+; Try: (simplify (+ x x))
+;
+; For help in REPL, type: help
+

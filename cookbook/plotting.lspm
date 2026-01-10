@@ -1,0 +1,84 @@
+; Plotting Examples
+; =================
+; ASCII and SVG plotting capabilities
+
+; ================================
+; ASCII Plotting
+; ================================
+
+; Plot x^2 from -2 to 2 (default size)
+(plot-ascii (* x x) -2 2)
+
+; Plot with custom height and width
+(plot-ascii (* x x) -2 2 15 60)  ; 15 rows, 60 columns
+
+; Plot sin(x) from 0 to 2*pi
+(plot-ascii (sin x) 0 6.28)
+
+; Plot cos(x)
+(plot-ascii (cos x) 0 6.28)
+
+; Plot exp(x) from -1 to 2
+(plot-ascii (exp x) -1 2)
+
+; Linear function
+(plot-ascii x 0 10)
+
+; ================================
+; SVG Plotting
+; ================================
+
+; Generate SVG for x^2
+(plot-svg (* x x) -2 2)
+
+; Custom dimensions (height, width)
+(plot-svg (sin x) 0 6.28 300 500)  ; 300px height, 500px width
+
+; Complex expressions
+(plot-svg (* x (sin (* 2 x))) 0 6.28)
+
+; ================================
+; Discrete Point Plotting
+; ================================
+
+; Plot specific points as ASCII
+(plot-points (list (vector 0 0) (vector 1 1) (vector 2 4) (vector 3 9)))
+
+; Parabola points
+(plot-points (list
+  (vector -2 4)
+  (vector -1 1)
+  (vector 0 0)
+  (vector 1 1)
+  (vector 2 4)))
+
+; ================================
+; Step-by-Step Solutions
+; ================================
+
+; See differentiation steps
+(diff-steps (^ x 3) x)
+
+; See integration steps
+(integrate-steps (sin x) x)
+
+; See simplification steps
+(simplify-steps (+ x x x))
+
+; See equation solving steps
+(solve-steps (- (* x x) 4) x)
+
+; ================================
+; Example Workflows
+; ================================
+
+; Plot a function and its derivative
+; First define and plot the function
+(plot-ascii (^ x 3) -2 2)
+
+; Then plot its derivative (3x^2)
+(plot-ascii (* 3 (^ x 2)) -2 2)
+
+; Compare sin(x) and cos(x) (its derivative)
+(plot-ascii (sin x) 0 6.28)
+(plot-ascii (cos x) 0 6.28)
