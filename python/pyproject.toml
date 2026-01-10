@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lispium"
+version = "0.1.0"
+description = "A Symbolic Computer Algebra System"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Tetraslam", email = "tetraslam@users.noreply.github.com"}
+]
+keywords = ["cas", "computer-algebra", "symbolic-math", "lisp", "mathematics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Other",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+requires-python = ">=3.8"
+
+[project.urls]
+Homepage = "https://github.com/Tetraslam/lispium"
+Repository = "https://github.com/Tetraslam/lispium"
+Issues = "https://github.com/Tetraslam/lispium/issues"
+
+[project.scripts]
+lispium = "lispium.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lispium = ["bin/*"]

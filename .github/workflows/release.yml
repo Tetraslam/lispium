@@ -66,6 +66,34 @@ jobs:
           matrix.target == 'x86_64-windows-gnu'
         run: zig build test
 
+      - name: Smoke test binary (native builds only)
+        if: |
+          matrix.target == 'x86_64-linux-gnu' ||
+          (runner.arch == 'ARM64' && matrix.target == 'aarch64-macos') ||
+          (runner.arch == 'X64' && matrix.target == 'x86_64-macos') ||
+          matrix.target == 'x86_64-windows-gnu'
+        shell: bash
+        run: |
+          # Test --version
+          ./zig-out/bin/lispium --version
+
+          # Test --help
+          ./zig-out/bin/lispium --help
+
+          # Test eval command
+          result=$(./zig-out/bin/lispium eval "(+ 1 2 3)")
+          echo "Result: $result"
+          if [[ "$result" != *"6"* ]]; then
+            echo "ERROR: Expected result to contain 6"
+            exit 1
+          fi
+
+          # Test symbolic computation
+          result=$(./zig-out/bin/lispium eval "(diff (^ x 3) x)")
+          echo "Diff result: $result"
+
+          echo "All smoke tests passed!"
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |

@@ -66,3 +66,33 @@ jobs:
           zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
           zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
           zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
+
+  vscode-extension:
+    runs-on: ubuntu-latest
+    name: VS Code Extension
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: editor/vscode
+        run: npm ci
+
+      - name: Compile TypeScript
+        working-directory: editor/vscode
+        run: npm run compile
+
+      - name: Package extension
+        working-directory: editor/vscode
+        run: npm run package
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: editor/vscode/*.vsix

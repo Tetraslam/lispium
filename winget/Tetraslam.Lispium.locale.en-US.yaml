@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Tetraslam.Lispium
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Tetraslam
+PublisherUrl: https://github.com/Tetraslam
+PublisherSupportUrl: https://github.com/Tetraslam/lispium/issues
+PackageName: Lispium
+PackageUrl: https://github.com/Tetraslam/lispium
+License: MIT
+LicenseUrl: https://github.com/Tetraslam/lispium/blob/main/LICENSE
+ShortDescription: A Symbolic Computer Algebra System
+Description: |
+  Lispium is a symbolic computer algebra system (CAS) written in Zig.
+  It provides:
+  - Symbolic computation with variables
+  - Calculus: differentiation, integration, Taylor series, limits
+  - Linear algebra: matrices, determinants, eigenvalues
+  - Algebra: polynomial operations, equation solving
+  - Number theory: prime testing, factorization, modular arithmetic
+  - Complex numbers, vectors, statistics, and more
+Tags:
+  - mathematics
+  - computer-algebra
+  - symbolic-computation
+  - calculus
+  - lisp
+  - repl
+  - cli
+ReleaseNotesUrl: https://github.com/Tetraslam/lispium/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

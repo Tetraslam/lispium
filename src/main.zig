@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const repl = @import("repl.zig");
+const lsp = @import("lsp.zig");
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 const Parser = @import("parser.zig").Parser;
 const Expr = @import("parser.zig").Expr;
@@ -47,6 +48,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) {
             try stdout.print("lispium {s}\n", .{version});
             return;
+        } else if (std.mem.eql(u8, cmd, "lsp")) {
+            try lsp.run(allocator);
+            return;
         }
     }
 
@@ -61,6 +65,7 @@ fn printUsage(writer: anytype) !void {
         \\  lispium repl              Start interactive REPL
         \\  lispium eval "<expr>"     Evaluate a single expression
         \\  lispium run <file.lspm>   Run a Lispium source file
+        \\  lispium lsp               Start language server (for editors)
         \\  lispium help              Show this help message
         \\  lispium version           Show version information
         \\

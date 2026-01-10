@@ -1,0 +1,144 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lispium",
+  "scopeName": "source.lispium",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#constants" },
+    { "include": "#special-forms" },
+    { "include": "#builtins-calculus" },
+    { "include": "#builtins-algebra" },
+    { "include": "#builtins-trig" },
+    { "include": "#builtins-matrix" },
+    { "include": "#builtins-vector" },
+    { "include": "#builtins-complex" },
+    { "include": "#builtins-logic" },
+    { "include": "#builtins-number-theory" },
+    { "include": "#builtins-statistics" },
+    { "include": "#builtins-special" },
+    { "include": "#builtins-list" },
+    { "include": "#builtins-other" },
+    { "include": "#operators" },
+    { "include": "#parens" },
+    { "include": "#symbols" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.semicolon.lispium",
+      "match": ";.*$"
+    },
+    "strings": {
+      "name": "string.quoted.double.lispium",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.lispium",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.numeric.lispium",
+          "match": "(?<![a-zA-Z_])(-?\\d+\\.?\\d*([eE][+-]?\\d+)?|\\d*\\.\\d+([eE][+-]?\\d+)?)(?![a-zA-Z_])"
+        },
+        {
+          "name": "constant.language.lispium",
+          "match": "\\b(pi|e|inf|i)\\b"
+        },
+        {
+          "name": "constant.language.boolean.lispium",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "special-forms": {
+      "name": "keyword.control.lispium",
+      "match": "(?<=\\()\\s*(define|lambda|let|letrec|if|cond|sum|product|rule|assume)(?=\\s|\\))"
+    },
+    "builtins-calculus": {
+      "name": "support.function.calculus.lispium",
+      "match": "(?<=\\()\\s*(diff|diff-steps|integrate|integrate-steps|taylor|limit|dsolve|fourier|laplace|inv-laplace|gradient|grad|divergence|curl|laplacian)(?=\\s|\\))"
+    },
+    "builtins-algebra": {
+      "name": "support.function.algebra.lispium",
+      "match": "(?<=\\()\\s*(simplify|simplify-steps|expand|solve|solve-steps|factor|partial-fractions|collect|substitute|roots|discriminant|coeffs|polydiv|polygcd|polylcm|rewrite)(?=\\s|\\))"
+    },
+    "builtins-trig": {
+      "name": "support.function.trig.lispium",
+      "match": "(?<=\\()\\s*(sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh)(?=\\s|\\))"
+    },
+    "builtins-matrix": {
+      "name": "support.function.matrix.lispium",
+      "match": "(?<=\\()\\s*(matrix|det|transpose|trace|matmul|inv|eigenvalues|eigenvectors|linsolve|lu|charpoly)(?=\\s|\\))"
+    },
+    "builtins-vector": {
+      "name": "support.function.vector.lispium",
+      "match": "(?<=\\()\\s*(vector|dot|cross|norm)(?=\\s|\\))"
+    },
+    "builtins-complex": {
+      "name": "support.function.complex.lispium",
+      "match": "(?<=\\()\\s*(complex|real|imag|conj|magnitude|arg)(?=\\s|\\))"
+    },
+    "builtins-logic": {
+      "name": "support.function.logic.lispium",
+      "match": "(?<=\\()\\s*(and|or|not|xor|implies|is\\?)(?=\\s|\\))"
+    },
+    "builtins-number-theory": {
+      "name": "support.function.number-theory.lispium",
+      "match": "(?<=\\()\\s*(mod|gcd|lcm|modpow|prime\\?|factorize|totient|extgcd|crt|factorial|!|binomial|choose|permutations|combinations)(?=\\s|\\))"
+    },
+    "builtins-statistics": {
+      "name": "support.function.statistics.lispium",
+      "match": "(?<=\\()\\s*(mean|variance|stddev|median|min|max)(?=\\s|\\))"
+    },
+    "builtins-special": {
+      "name": "support.function.special.lispium",
+      "match": "(?<=\\()\\s*(gamma|beta|erf|erfc|besselj|bessely|digamma|exp|ln|log|sqrt|pow)(?=\\s|\\))"
+    },
+    "builtins-list": {
+      "name": "support.function.list.lispium",
+      "match": "(?<=\\()\\s*(car|cdr|cons|list|length|nth|map|filter|reduce|append|reverse|range)(?=\\s|\\))"
+    },
+    "builtins-other": {
+      "name": "support.function.other.lispium",
+      "match": "(?<=\\()\\s*(quat|quat\\+|quat\\*|quat-conj|quat-norm|quat-inv|quat-scalar|quat-vector|gf|gf\\+|gf-|gf\\*|gf\\/|gf\\^|gf-inv|gf-neg|tensor|tensor-rank|tensor-contract|tensor-product|lagrange|newton-interp|newton-raphson|bisection|to-cf|from-cf|cf-convergent|cf-rational|memoize|memo-clear|memo-stats|plot-ascii|plot-svg|plot-points|latex)(?=\\s|\\))"
+    },
+    "operators": {
+      "name": "keyword.operator.lispium",
+      "match": "(?<=\\()\\s*(\\+|-|\\*|\\/|\\^|=|<|>)(?=\\s|\\))"
+    },
+    "parens": {
+      "patterns": [
+        {
+          "begin": "\\(",
+          "end": "\\)",
+          "beginCaptures": {
+            "0": { "name": "punctuation.paren.open.lispium" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.paren.close.lispium" }
+          },
+          "patterns": [
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "variable.parameter.pattern.lispium",
+          "match": "\\?[a-zA-Z_][a-zA-Z0-9_\\-]*"
+        },
+        {
+          "name": "variable.other.lispium",
+          "match": "[a-zA-Z_][a-zA-Z0-9_\\-\\?\\!]*"
+        }
+      ]
+    }
+  }
+}

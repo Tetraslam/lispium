@@ -1,0 +1,2 @@
+# Binaries are downloaded from GitHub releases during package build
+# This directory is populated by the CI/CD pipeline

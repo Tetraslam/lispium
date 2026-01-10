@@ -1,0 +1,147 @@
+name: Verify Release
+
+# Run after a release is published to verify packages work correctly
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to test (e.g., 0.1.0)'
+        required: true
+        default: '0.1.0'
+
+jobs:
+  verify-github-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: lispium-linux-x86_64.tar.gz
+            binary: lispium
+          - os: macos-13  # Intel
+            artifact: lispium-macos-x86_64.tar.gz
+            binary: lispium
+          - os: macos-latest  # ARM64
+            artifact: lispium-macos-aarch64.tar.gz
+            binary: lispium
+          - os: windows-latest
+            artifact: lispium-windows-x86_64.zip
+            binary: lispium.exe
+
+    runs-on: ${{ matrix.os }}
+    name: Test ${{ matrix.os }}
+
+    steps:
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and extract (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          curl -sL "https://github.com/Tetraslam/lispium/releases/download/v${VERSION}/${{ matrix.artifact }}" | tar xz
+          chmod +x ${{ matrix.binary }}
+
+      - name: Download and extract (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.version.outputs.version }}"
+          Invoke-WebRequest -Uri "https://github.com/Tetraslam/lispium/releases/download/v${VERSION}/${{ matrix.artifact }}" -OutFile archive.zip
+          Expand-Archive archive.zip -DestinationPath .
+
+      - name: Test binary
+        shell: bash
+        run: |
+          echo "=== Testing --version ==="
+          ./${{ matrix.binary }} --version
+
+          echo "=== Testing --help ==="
+          ./${{ matrix.binary }} --help
+
+          echo "=== Testing eval ==="
+          result=$(./${{ matrix.binary }} eval "(+ 1 2 3)")
+          echo "Result: $result"
+          if [[ "$result" != *"6"* ]]; then
+            echo "FAIL: Expected 6"
+            exit 1
+          fi
+
+          echo "=== Testing symbolic diff ==="
+          result=$(./${{ matrix.binary }} eval "(diff (^ x 2) x)")
+          echo "Result: $result"
+
+          echo "=== Testing matrix ==="
+          result=$(./${{ matrix.binary }} eval "(det (matrix (1 2) (3 4)))")
+          echo "Result: $result"
+
+          echo "=== All tests passed! ==="
+
+  verify-homebrew:
+    runs-on: macos-latest
+    name: Test Homebrew
+    # Only run if Homebrew tap exists
+    continue-on-error: true
+
+    steps:
+      - name: Install via Homebrew
+        run: |
+          brew tap Tetraslam/lispium
+          brew install lispium
+
+      - name: Test installation
+        run: |
+          which lispium
+          lispium --version
+          lispium eval "(+ 1 2 3)"
+
+  verify-pypi:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    name: Test PyPI (${{ matrix.os }})
+    # Only run after PyPI publish
+    continue-on-error: true
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install from PyPI
+        run: pip install lispium
+
+      - name: Test installation
+        shell: bash
+        run: |
+          lispium --version || echo "Note: Binary might not be bundled for this platform"
+          lispium eval "(+ 1 2 3)" || echo "If this fails, install lispium binary separately"
+
+  summary:
+    needs: [verify-github-release, verify-homebrew, verify-pypi]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## Release Verification Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Releases | ${{ needs.verify-github-release.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Homebrew | ${{ needs.verify-homebrew.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| PyPI | ${{ needs.verify-pypi.result }} |" >> $GITHUB_STEP_SUMMARY

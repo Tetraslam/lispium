@@ -1,0 +1,78 @@
+{
+  "name": "lispium",
+  "displayName": "Lispium",
+  "description": "Language support for Lispium - A Symbolic Computer Algebra System",
+  "version": "0.1.0",
+  "publisher": "tetraslam",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tetraslam/lispium"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "lispium",
+    "lisp",
+    "symbolic",
+    "computer algebra",
+    "cas",
+    "mathematics"
+  ],
+  "activationEvents": [
+    "onLanguage:lispium"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "lispium",
+        "aliases": ["Lispium", "lispium"],
+        "extensions": [".lspm"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lispium",
+        "scopeName": "source.lispium",
+        "path": "./syntaxes/lispium.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Lispium",
+      "properties": {
+        "lispium.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the lispium executable. If empty, searches PATH."
+        },
+        "lispium.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
