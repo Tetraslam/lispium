@@ -17,23 +17,23 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-linux-gnu
             artifact: lispium-linux-x86_64
-            zig_url: https://ziglang.org/builds/zig-linux-x86_64-0.15.0-dev.650+9de1177b9.tar.xz
+            zig_url: https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
           - os: ubuntu-latest
             target: aarch64-linux-gnu
             artifact: lispium-linux-aarch64
-            zig_url: https://ziglang.org/builds/zig-linux-x86_64-0.15.0-dev.650+9de1177b9.tar.xz
+            zig_url: https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
           - os: macos-latest
             target: x86_64-macos
             artifact: lispium-macos-x86_64
-            zig_url: https://ziglang.org/builds/zig-macos-aarch64-0.15.0-dev.650+9de1177b9.tar.xz
+            zig_url: https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
           - os: macos-latest
             target: aarch64-macos
             artifact: lispium-macos-aarch64
-            zig_url: https://ziglang.org/builds/zig-macos-aarch64-0.15.0-dev.650+9de1177b9.tar.xz
+            zig_url: https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
           - os: windows-latest
             target: x86_64-windows-gnu
             artifact: lispium-windows-x86_64
-            zig_url: https://ziglang.org/builds/zig-windows-x86_64-0.15.0-dev.650+9de1177b9.zip
+            zig_url: https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip
 
     runs-on: ${{ matrix.os }}
 
