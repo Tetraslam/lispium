@@ -51,7 +51,7 @@ const help_text =
     \\  (det (matrix (1 2) (3 4)))=> -2
     \\
     \\Tips:
-    \\  - Press TAB for completion suggestions
+    \\  - Type 'complete <partial>' for function name completions
     \\  - Type ?function for help on a specific function (e.g., ?diff)
     \\  - Multi-line input: expressions continue until parens are balanced
     \\
