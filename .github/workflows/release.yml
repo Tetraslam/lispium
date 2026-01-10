@@ -17,28 +17,43 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-linux-gnu
             artifact: lispium-linux-x86_64
+            zig_url: https://ziglang.org/builds/zig-linux-x86_64-0.15.0-dev.650+9de1177b9.tar.xz
           - os: ubuntu-latest
             target: aarch64-linux-gnu
             artifact: lispium-linux-aarch64
+            zig_url: https://ziglang.org/builds/zig-linux-x86_64-0.15.0-dev.650+9de1177b9.tar.xz
           - os: macos-latest
             target: x86_64-macos
             artifact: lispium-macos-x86_64
+            zig_url: https://ziglang.org/builds/zig-macos-aarch64-0.15.0-dev.650+9de1177b9.tar.xz
           - os: macos-latest
             target: aarch64-macos
             artifact: lispium-macos-aarch64
+            zig_url: https://ziglang.org/builds/zig-macos-aarch64-0.15.0-dev.650+9de1177b9.tar.xz
           - os: windows-latest
             target: x86_64-windows-gnu
             artifact: lispium-windows-x86_64
+            zig_url: https://ziglang.org/builds/zig-windows-x86_64-0.15.0-dev.650+9de1177b9.zip
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.15.0
+      - name: Install Zig (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -L ${{ matrix.zig_url }} | tar -xJ
+          echo "$PWD/$(ls -d zig-*)" >> $GITHUB_PATH
+
+      - name: Install Zig (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ matrix.zig_url }}" -OutFile zig.zip
+          Expand-Archive zig.zip -DestinationPath .
+          $zigDir = Get-ChildItem -Directory -Filter "zig-*" | Select-Object -First 1
+          echo "$PWD\$($zigDir.Name)" >> $env:GITHUB_PATH
 
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
