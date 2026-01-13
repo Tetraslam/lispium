@@ -51,25 +51,32 @@ jobs:
           echo "Downloading binaries for version $VERSION..."
 
           # Linux x86_64
+          mkdir -p tmp && cd tmp
           curl -sL "${BASE_URL}/lispium-linux-x86_64.tar.gz" | tar xz
-          mv lispium lispium-linux-x86_64
-          chmod +x lispium-linux-x86_64
+          mv lispium ../lispium-linux-x86_64
+          cd .. && rm -rf tmp
 
           # macOS x86_64
+          mkdir -p tmp && cd tmp
           curl -sL "${BASE_URL}/lispium-macos-x86_64.tar.gz" | tar xz
-          mv lispium lispium-darwin-x86_64
-          chmod +x lispium-darwin-x86_64
+          mv lispium ../lispium-darwin-x86_64
+          cd .. && rm -rf tmp
 
           # macOS ARM64
+          mkdir -p tmp && cd tmp
           curl -sL "${BASE_URL}/lispium-macos-aarch64.tar.gz" | tar xz
-          mv lispium lispium-darwin-aarch64
-          chmod +x lispium-darwin-aarch64
+          mv lispium ../lispium-darwin-aarch64
+          cd .. && rm -rf tmp
 
           # Windows x86_64
+          mkdir -p tmp && cd tmp
           curl -sL "${BASE_URL}/lispium-windows-x86_64.zip" -o win.zip
           unzip -q win.zip
-          mv lispium.exe lispium-windows-x86_64.exe
-          rm win.zip
+          mv lispium.exe ../lispium-windows-x86_64.exe
+          cd .. && rm -rf tmp
+
+          # Make all binaries executable
+          chmod +x lispium-* 2>/dev/null || true
 
           ls -la
 
