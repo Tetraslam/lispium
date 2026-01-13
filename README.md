@@ -1,5 +1,31 @@
 # Lispium
 
+A symbolic computer algebra system in pure Zig.
+
+```bash
+# Install
+pip install lispium        # Python/pip
+brew install lispium       # macOS (coming soon)
+```
+
+```bash
+# Run
+lispium repl
+```
+
+```lisp
+> (diff (^ x 3) x)
+(* 3 (^ x 2))
+
+> (solve (- (^ x 2) 4) x)
+(solutions 2 -2)
+
+> (det (matrix (a b) (c d)))
+(- (* a d) (* b c))
+```
+
+---
+
 ## A Rare Metal of Algebraic Power
 
 Lispium is a language designed to be a high-performance lisp for symbolic algebraic computation.
