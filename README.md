@@ -1,34 +1,49 @@
 # Lispium
 
-A symbolic computer algebra system in pure Zig.
+**A Rare Metal of Algebraic Power**
+
+A symbolic computer algebra system written in pure Zig. Zero dependencies, blazing fast.
+
+## Install
 
 ```bash
-# Install
-pip install lispium        # Python/pip
-brew install lispium       # macOS (coming soon)
+pip install lispium
 ```
 
+## Quick Start
+
 ```bash
-# Run
 lispium repl
 ```
 
 ```lisp
 > (diff (^ x 3) x)
-(* 3 (^ x 2))
+3x²
 
 > (solve (- (^ x 2) 4) x)
-(solutions 2 -2)
+{2, -2}
+
+> (integrate (* 2 x) x)
+x²
 
 > (det (matrix (a b) (c d)))
-(- (* a d) (* b c))
+ad - bc
+
+> (taylor (exp x) x 0 3)
+1 + x + x²/2 + x³/6
 ```
 
+## Highlights
+
+- **Calculus** - derivatives, integrals, Taylor series, limits
+- **Algebra** - equation solving, factoring, partial fractions
+- **Linear Algebra** - matrices, determinants, eigenvalues, LU decomposition
+- **Number Theory** - primes, factorization, Chinese Remainder Theorem
+- **And more** - quaternions, finite fields, Laplace transforms, plotting
+
+[Full documentation below](#features) · [Cookbook](cookbook/)
+
 ---
-
-## A Rare Metal of Algebraic Power
-
-Lispium is a language designed to be a high-performance lisp for symbolic algebraic computation.
 
 ## Features
 
