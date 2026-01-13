@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 const Parser = @import("parser.zig").Parser;
 const Expr = @import("parser.zig").Expr;
@@ -7,6 +8,7 @@ const Expr = @import("parser.zig").Expr;
 /// Implements Language Server Protocol over stdin/stdout using JSON-RPC 2.0
 
 const builtin_docs = @import("lsp/builtin_docs.zig");
+const server_version = build_options.version;
 
 pub fn run(allocator: std.mem.Allocator) !void {
     var server = Server.init(allocator);
@@ -132,21 +134,22 @@ const Server = struct {
     }
 
     fn handleInitialize(self: *Server, id: ?std.json.Value) ![]const u8 {
-        const capabilities =
-            \\{
-            \\  "capabilities": {
+        var buf: [512]u8 = undefined;
+        const capabilities = std.fmt.bufPrint(&buf,
+            \\{{
+            \\  "capabilities": {{
             \\    "textDocumentSync": 1,
             \\    "hoverProvider": true,
-            \\    "completionProvider": {
+            \\    "completionProvider": {{
             \\      "triggerCharacters": ["(", " "]
-            \\    }
-            \\  },
-            \\  "serverInfo": {
+            \\    }}
+            \\  }},
+            \\  "serverInfo": {{
             \\    "name": "lispium-lsp",
-            \\    "version": "0.1.0"
-            \\  }
-            \\}
-        ;
+            \\    "version": "{s}"
+            \\  }}
+            \\}}
+        , .{server_version}) catch return error.OutOfMemory;
         return try self.makeResponse(id, capabilities);
     }
 
