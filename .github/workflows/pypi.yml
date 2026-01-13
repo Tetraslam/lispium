@@ -5,10 +5,14 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0)'
+        required: true
+        default: '0.1.0'
       test_pypi:
         description: 'Publish to Test PyPI instead'
         required: false
-        default: 'false'
+        default: 'true'
 
 jobs:
   build-and-publish:
@@ -34,10 +38,11 @@ jobs:
         run: |
           cd python/src/lispium/bin
 
-          # Get version from release tag or default
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [ -z "$VERSION" ]; then
-            VERSION="0.1.0"
+          # Get version from input or release tag
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
           fi
 
           BASE_URL="https://github.com/Tetraslam/lispium/releases/download/v${VERSION}"
