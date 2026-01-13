@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const repl = @import("repl.zig");
 const lsp = @import("lsp.zig");
+const bench = @import("bench.zig");
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 const Parser = @import("parser.zig").Parser;
 const Expr = @import("parser.zig").Expr;
@@ -51,6 +52,35 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, cmd, "lsp")) {
             try lsp.run(allocator);
             return;
+        } else if (std.mem.eql(u8, cmd, "bench")) {
+            // Parse bench options
+            var mode: bench.OutputMode = .pretty;
+            var quick = false;
+
+            while (args_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "--plain")) {
+                    mode = .plain;
+                } else if (std.mem.eql(u8, arg, "--json")) {
+                    mode = .json;
+                } else if (std.mem.eql(u8, arg, "--quick") or std.mem.eql(u8, arg, "-q")) {
+                    quick = true;
+                } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                    try stdout.print(
+                        \\Usage: lispium bench [options]
+                        \\
+                        \\Options:
+                        \\  --plain    Output in plain CSV format
+                        \\  --json     Output in JSON format
+                        \\  --quick    Run fewer iterations (faster)
+                        \\  --help     Show this help
+                        \\
+                    , .{});
+                    return;
+                }
+            }
+
+            try bench.run(allocator, mode, quick);
+            return;
         }
     }
 
@@ -65,15 +95,22 @@ fn printUsage(writer: anytype) !void {
         \\  lispium repl              Start interactive REPL
         \\  lispium eval "<expr>"     Evaluate a single expression
         \\  lispium run <file.lspm>   Run a Lispium source file
+        \\  lispium bench [options]   Run benchmark suite
         \\  lispium lsp               Start language server (for editors)
         \\  lispium help              Show this help message
         \\  lispium version           Show version information
+        \\
+        \\Benchmark options:
+        \\  --plain    CSV output
+        \\  --json     JSON output
+        \\  --quick    Fewer iterations
         \\
         \\Examples:
         \\  lispium repl
         \\  lispium eval "(+ 1 2 3)"
         \\  lispium eval "(diff (^ x 3) x)"
         \\  lispium run cookbook/calculus.lspm
+        \\  lispium bench --quick
         \\
     , .{version});
 }
