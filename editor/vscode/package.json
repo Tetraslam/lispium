@@ -2,7 +2,7 @@
   "name": "lispium",
   "displayName": "Lispium",
   "description": "Language support for Lispium - A Symbolic Computer Algebra System",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "tetraslam",
   "repository": {
     "type": "git",
