@@ -49,7 +49,6 @@ const Server = struct {
         const stdin_file = std.fs.File.stdin();
         const stdout_file = std.fs.File.stdout();
         const stdin = stdin_file.deprecatedReader();
-        const stdout = stdout_file.deprecatedWriter();
 
         var line_buf = std.array_list.Managed(u8).init(self.allocator);
         defer line_buf.deinit();
@@ -76,7 +75,7 @@ const Server = struct {
             // Read content
             const content = try self.allocator.alloc(u8, len);
             defer self.allocator.free(content);
-            const bytes_read = stdin_file.readAll(content) catch |err| {
+            const bytes_read = stdin.readAll(content) catch |err| {
                 if (err == error.EndOfStream) return;
                 return err;
             };
@@ -87,15 +86,20 @@ const Server = struct {
             defer parsed.deinit();
 
             // Handle the message
-            const response = try self.handleMessage(parsed.value);
+            const response = try self.handleMessage(parsed.value, stdout_file);
             if (response) |resp| {
                 defer self.allocator.free(resp);
-                try stdout.print("Content-Length: {d}\r\n\r\n{s}", .{ resp.len, resp });
+                self.writeMessage(stdout_file, resp);
             }
         }
     }
 
-    fn handleMessage(self: *Server, msg: std.json.Value) !?[]const u8 {
+    fn writeMessage(_: *Server, stdout: std.fs.File, content: []const u8) void {
+        const writer = stdout.deprecatedWriter();
+        writer.print("Content-Length: {d}\r\n\r\n{s}", .{ content.len, content }) catch return;
+    }
+
+    fn handleMessage(self: *Server, msg: std.json.Value, stdout: std.fs.File) !?[]const u8 {
         const obj = msg.object;
 
         const method = obj.get("method") orelse return null;
@@ -116,10 +120,10 @@ const Server = struct {
         } else if (std.mem.eql(u8, method_str, "exit")) {
             return null;
         } else if (std.mem.eql(u8, method_str, "textDocument/didOpen")) {
-            try self.handleDidOpen(params);
+            try self.handleDidOpen(params, stdout);
             return null;
         } else if (std.mem.eql(u8, method_str, "textDocument/didChange")) {
-            try self.handleDidChange(params);
+            try self.handleDidChange(params, stdout);
             return null;
         } else if (std.mem.eql(u8, method_str, "textDocument/didClose")) {
             try self.handleDidClose(params);
@@ -141,7 +145,7 @@ const Server = struct {
             \\    "textDocumentSync": 1,
             \\    "hoverProvider": true,
             \\    "completionProvider": {{
-            \\      "triggerCharacters": ["(", " "]
+            \\      "triggerCharacters": ["("]
             \\    }}
             \\  }},
             \\  "serverInfo": {{
@@ -153,7 +157,7 @@ const Server = struct {
         return try self.makeResponse(id, capabilities);
     }
 
-    fn handleDidOpen(self: *Server, params: ?std.json.Value) !void {
+    fn handleDidOpen(self: *Server, params: ?std.json.Value, stdout: std.fs.File) !void {
         const p = params orelse return;
         const text_doc = p.object.get("textDocument") orelse return;
         const uri = text_doc.object.get("uri") orelse return;
@@ -170,10 +174,10 @@ const Server = struct {
         });
 
         // Publish diagnostics
-        try self.publishDiagnostics(uri.string, text.string);
+        try self.publishDiagnostics(uri.string, text.string, stdout);
     }
 
-    fn handleDidChange(self: *Server, params: ?std.json.Value) !void {
+    fn handleDidChange(self: *Server, params: ?std.json.Value, stdout: std.fs.File) !void {
         const p = params orelse return;
         const text_doc = p.object.get("textDocument") orelse return;
         const uri = text_doc.object.get("uri") orelse return;
@@ -187,7 +191,7 @@ const Server = struct {
             doc.content = try self.allocator.dupe(u8, new_text.string);
         }
 
-        try self.publishDiagnostics(uri.string, new_text.string);
+        try self.publishDiagnostics(uri.string, new_text.string, stdout);
     }
 
     fn handleDidClose(self: *Server, params: ?std.json.Value) !void {
@@ -258,7 +262,7 @@ const Server = struct {
         return try self.makeResponse(id, buf.items);
     }
 
-    fn publishDiagnostics(self: *Server, uri: []const u8, content: []const u8) !void {
+    fn publishDiagnostics(self: *Server, uri: []const u8, content: []const u8, stdout: std.fs.File) !void {
         var diagnostics: std.ArrayList(u8) = .empty;
         defer diagnostics.deinit(self.allocator);
 
@@ -316,9 +320,7 @@ const Server = struct {
         , .{ escaped_uri, diagnostics.items }) catch return;
 
         // Write notification
-        const stdout_file = std.fs.File.stdout();
-        const stdout = stdout_file.deprecatedWriter();
-        try stdout.print("Content-Length: {d}\r\n\r\n{s}", .{ notification.len, notification });
+        self.writeMessage(stdout, notification);
     }
 
     fn getWordAtPosition(self: *Server, content: []const u8, line_num: usize, char_num: usize) []const u8 {

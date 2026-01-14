@@ -11,23 +11,30 @@ import {
 let client: LanguageClient;
 
 export function activate(context: ExtensionContext) {
+    const outputChannel = window.createOutputChannel('Lispium');
+    outputChannel.appendLine('Lispium extension activating...');
+
     // Get the path to the lispium executable
     const config = workspace.getConfiguration('lispium');
     let serverPath = config.get<string>('server.path') || '';
 
     if (!serverPath) {
         // Try to find lispium in common locations
+        const homeDir = process.env.HOME || process.env.USERPROFILE || '';
         const possiblePaths = [
-            // In PATH (will be resolved by spawn)
-            'lispium',
+            // User-local installations (pip install --user, etc.)
+            path.join(homeDir, '.local', 'bin', 'lispium'),
             // Common installation locations
             '/usr/local/bin/lispium',
             '/usr/bin/lispium',
             '/opt/homebrew/bin/lispium',
             // Windows
             'C:\\Program Files\\lispium\\lispium.exe',
+            path.join(homeDir, 'AppData', 'Local', 'Programs', 'lispium', 'lispium.exe'),
             // Local development
             path.join(context.extensionPath, '..', '..', 'zig-out', 'bin', 'lispium'),
+            // Fallback to PATH lookup
+            'lispium',
         ];
 
         for (const p of possiblePaths) {
@@ -50,6 +57,8 @@ export function activate(context: ExtensionContext) {
             serverPath = 'lispium'; // Fallback to PATH lookup
         }
     }
+
+    outputChannel.appendLine(`Using server path: ${serverPath}`);
 
     // Server options - run lispium lsp
     const serverOptions: ServerOptions = {
@@ -86,7 +95,12 @@ export function activate(context: ExtensionContext) {
     );
 
     // Start the client. This will also launch the server
-    client.start();
+    outputChannel.appendLine('Starting language client...');
+    client.start().then(() => {
+        outputChannel.appendLine('Language client started successfully');
+    }).catch((err) => {
+        outputChannel.appendLine(`Language client failed to start: ${err}`);
+    });
 
     context.subscriptions.push({
         dispose: () => {
