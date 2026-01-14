@@ -1475,6 +1475,158 @@ pub fn builtin_simplify(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
     return symbolic.simplify(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
 }
 
+pub fn builtin_evalf(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (evalf expr) or (N expr) - numerically evaluate expression
+    // Replaces symbolic constants (pi, e, inf) with their numeric values
+    if (args.items.len != 1) return BuiltinError.InvalidArgument;
+    return evalfExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+}
+
+fn evalfExpr(expr: *const Expr, allocator: std.mem.Allocator) BuiltinError!*Expr {
+    switch (expr.*) {
+        .number => {
+            const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .number = expr.number };
+            return result;
+        },
+        .symbol, .owned_symbol => |s| {
+            // Replace symbolic constants with numeric values
+            if (std.mem.eql(u8, s, "pi")) {
+                const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                result.* = .{ .number = std.math.pi };
+                return result;
+            } else if (std.mem.eql(u8, s, "e")) {
+                const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                result.* = .{ .number = std.math.e };
+                return result;
+            } else if (std.mem.eql(u8, s, "inf") or std.mem.eql(u8, s, "infinity")) {
+                const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                result.* = .{ .number = std.math.inf(f64) };
+                return result;
+            } else if (std.mem.eql(u8, s, "-inf") or std.mem.eql(u8, s, "-infinity")) {
+                const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                result.* = .{ .number = -std.math.inf(f64) };
+                return result;
+            }
+            // Unknown symbol - keep as-is
+            return symbolic.copyExpr(expr, allocator) catch return BuiltinError.OutOfMemory;
+        },
+        .lambda => {
+            return symbolic.copyExpr(expr, allocator) catch return BuiltinError.OutOfMemory;
+        },
+        .list => |lst| {
+            if (lst.items.len == 0) {
+                return symbolic.copyExpr(expr, allocator) catch return BuiltinError.OutOfMemory;
+            }
+
+            // Recursively evaluate all items
+            var new_list: std.ArrayList(*Expr) = .empty;
+            errdefer {
+                for (new_list.items) |item| {
+                    item.deinit(allocator);
+                    allocator.destroy(item);
+                }
+                new_list.deinit(allocator);
+            }
+
+            for (lst.items) |item| {
+                const evaled = try evalfExpr(item, allocator);
+                new_list.append(allocator, evaled) catch return BuiltinError.OutOfMemory;
+            }
+
+            // If we have an operator and all args are numbers, try to evaluate
+            if (new_list.items.len >= 2 and new_list.items[0].* == .symbol) {
+                const op = new_list.items[0].symbol;
+                var all_numeric = true;
+                for (new_list.items[1..]) |arg| {
+                    if (arg.* != .number) {
+                        all_numeric = false;
+                        break;
+                    }
+                }
+
+                if (all_numeric) {
+                    // Try numeric evaluation of common functions
+                    if (new_list.items.len == 2) {
+                        const x = new_list.items[1].number;
+                        var result_val: ?f64 = null;
+
+                        if (std.mem.eql(u8, op, "sin")) {
+                            result_val = @sin(x);
+                        } else if (std.mem.eql(u8, op, "cos")) {
+                            result_val = @cos(x);
+                        } else if (std.mem.eql(u8, op, "tan")) {
+                            result_val = @tan(x);
+                        } else if (std.mem.eql(u8, op, "exp")) {
+                            result_val = @exp(x);
+                        } else if (std.mem.eql(u8, op, "ln") or std.mem.eql(u8, op, "log")) {
+                            result_val = @log(x);
+                        } else if (std.mem.eql(u8, op, "sqrt")) {
+                            result_val = @sqrt(x);
+                        } else if (std.mem.eql(u8, op, "asin")) {
+                            result_val = std.math.asin(x);
+                        } else if (std.mem.eql(u8, op, "acos")) {
+                            result_val = std.math.acos(x);
+                        } else if (std.mem.eql(u8, op, "atan")) {
+                            result_val = std.math.atan(x);
+                        } else if (std.mem.eql(u8, op, "sinh")) {
+                            result_val = std.math.sinh(x);
+                        } else if (std.mem.eql(u8, op, "cosh")) {
+                            result_val = std.math.cosh(x);
+                        } else if (std.mem.eql(u8, op, "tanh")) {
+                            result_val = std.math.tanh(x);
+                        }
+
+                        if (result_val) |val| {
+                            for (new_list.items) |item| {
+                                item.deinit(allocator);
+                                allocator.destroy(item);
+                            }
+                            new_list.deinit(allocator);
+                            const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                            result.* = .{ .number = val };
+                            return result;
+                        }
+                    } else if (new_list.items.len == 3) {
+                        const a = new_list.items[1].number;
+                        const b = new_list.items[2].number;
+                        var result_val: ?f64 = null;
+
+                        if (std.mem.eql(u8, op, "+")) {
+                            result_val = a + b;
+                        } else if (std.mem.eql(u8, op, "-")) {
+                            result_val = a - b;
+                        } else if (std.mem.eql(u8, op, "*")) {
+                            result_val = a * b;
+                        } else if (std.mem.eql(u8, op, "/")) {
+                            result_val = a / b;
+                        } else if (std.mem.eql(u8, op, "^") or std.mem.eql(u8, op, "pow")) {
+                            result_val = std.math.pow(f64, a, b);
+                        } else if (std.mem.eql(u8, op, "atan2")) {
+                            result_val = std.math.atan2(a, b);
+                        }
+
+                        if (result_val) |val| {
+                            for (new_list.items) |item| {
+                                item.deinit(allocator);
+                                allocator.destroy(item);
+                            }
+                            new_list.deinit(allocator);
+                            const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                            result.* = .{ .number = val };
+                            return result;
+                        }
+                    }
+                }
+            }
+
+            const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .list = new_list };
+            return result;
+        },
+    }
+}
+
 pub fn builtin_diff(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (diff expr var) - first derivative
     // (diff expr var n) - nth derivative

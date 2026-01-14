@@ -83,6 +83,10 @@ pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
                 if (std.mem.eql(u8, op_expr.symbol, "product")) {
                     return try evalProduct(expr, env);
                 }
+                // (solve equation var) - special form to handle (= left right) syntax
+                if (std.mem.eql(u8, op_expr.symbol, "solve")) {
+                    return try evalSolve(expr, env);
+                }
             }
 
             // Evaluate the operator (could be a lambda expression or a symbol)
@@ -761,6 +765,57 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
     const result = try env.allocator.create(Expr);
     result.* = .{ .list = result_list };
     return result;
+}
+
+/// Evaluates (solve equation var) where equation can be:
+/// - (= left right) which gets converted to (- left right) = 0
+/// - Any expression assumed equal to 0
+fn evalSolve(expr: *Expr, env: *Env) Error!*Expr {
+    if (expr.list.items.len != 3) return Error.InvalidDefine;
+
+    const eq_expr = expr.list.items[1];
+    const var_expr = expr.list.items[2];
+
+    if (var_expr.* != .symbol) return Error.InvalidDefine;
+    const var_name = var_expr.symbol;
+
+    // Check if equation is in (= left right) form
+    var equation_to_solve: *Expr = undefined;
+    var owns_equation = false;
+
+    if (eq_expr.* == .list and eq_expr.list.items.len == 3) {
+        if (eq_expr.list.items[0].* == .symbol and
+            std.mem.eql(u8, eq_expr.list.items[0].symbol, "="))
+        {
+            // Convert (= left right) to (- left right)
+            const left = try eval(eq_expr.list.items[1], env);
+            errdefer {
+                left.deinit(env.allocator);
+                env.allocator.destroy(left);
+            }
+            const right = try eval(eq_expr.list.items[2], env);
+            errdefer {
+                right.deinit(env.allocator);
+                env.allocator.destroy(right);
+            }
+
+            equation_to_solve = try symbolic.makeBinOp(env.allocator, "-", left, right);
+            owns_equation = true;
+        }
+    }
+
+    if (!owns_equation) {
+        // Normal form: evaluate the expression (assumed = 0)
+        equation_to_solve = try eval(eq_expr, env);
+        owns_equation = true;
+    }
+
+    defer if (owns_equation) {
+        equation_to_solve.deinit(env.allocator);
+        env.allocator.destroy(equation_to_solve);
+    };
+
+    return symbolic.solve(equation_to_solve, var_name, env.allocator) catch return Error.OutOfMemory;
 }
 
 fn restoreBindings(old_values: *std.ArrayList(SavedBinding), env: *Env) void {

@@ -143,9 +143,13 @@ zig build run -- repl
 
 ```lisp
 (simplify (+ x x x))          ; => (* 3 x)
+(simplify (+ (* 2 x) (* 3 x))) ; => (* 5 x)
 (expand (* (+ x 1) (+ x 1)))  ; => (+ (^ x 2) (* 2 x) 1)
 (solve (- (^ x 2) 4) x)       ; => (solutions 2 -2)
+(solve (= x 5) x)             ; => 5 (equation syntax)
 (substitute (+ x y) x 5)      ; => (+ 5 y)
+(evalf pi)                    ; => 3.141592653589793
+(N (sin pi))                  ; => 0
 ```
 
 ### Factoring
@@ -351,7 +355,7 @@ For verbose output showing all test names:
 zig build test --summary all
 ```
 
-453 tests, 0 memory leaks.
+460 tests, 0 memory leaks.
 
 ## New Features
 

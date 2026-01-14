@@ -433,16 +433,17 @@ return result;
 | `limit` | `(limit expr var point)` | Limit with L'Hôpital's rule |
 | `substitute` | `(substitute expr var value)` | Variable substitution |
 
-### Algebra (6 functions)
+### Algebra (7 functions)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `simplify` | `(simplify expr)` | Algebraic simplification |
 | `expand` | `(expand expr)` | Expand products |
-| `solve` | `(solve expr var)` | Solve equation (linear/quadratic) |
+| `solve` | `(solve expr var)` or `(solve (= left right) var)` | Solve equation (linear/quadratic) |
 | `factor` | `(factor expr var)` | Factor polynomial |
 | `partial-fractions` | `(partial-fractions expr var)` | Partial fraction decomposition |
 | `collect` | `(collect expr var)` | Collect like terms |
+| `evalf` / `N` | `(evalf expr)` or `(N expr)` | Numeric evaluation of constants (pi, e) |
 
 ### Complex Numbers (6 functions)
 

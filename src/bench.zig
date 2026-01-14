@@ -388,6 +388,8 @@ fn initBuiltins(env: *Env) !void {
 
     // Algebra
     try env.putBuiltin("simplify", builtins.builtin_simplify);
+    try env.putBuiltin("evalf", builtins.builtin_evalf);
+    try env.putBuiltin("N", builtins.builtin_evalf);
     try env.putBuiltin("diff", builtins.builtin_diff);
     try env.putBuiltin("integrate", builtins.builtin_integrate);
     try env.putBuiltin("expand", builtins.builtin_expand);

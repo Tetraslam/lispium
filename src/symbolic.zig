@@ -261,50 +261,120 @@ fn buildResultList(op_name: []const u8, args: *std.ArrayList(*Expr), allocator: 
     return result;
 }
 
+/// Extract coefficient and base from a term.
+/// For (* coeff base) returns (coeff, base)
+/// For a simple expression returns (1, expr)
+/// Returns null for coeff if it's implicitly 1.
+const CoeffBase = struct {
+    coeff: ?f64,
+    base: *Expr,
+    owns_base: bool, // true if we allocated base, false if it's borrowed
+};
+
+fn extractCoeffBase(term: *Expr) CoeffBase {
+    // Check for (* coeff base) or (* base coeff) pattern
+    if (term.* == .list) {
+        const lst = term.list;
+        if (lst.items.len == 3) {
+            if (lst.items[0].* == .symbol or lst.items[0].* == .owned_symbol) {
+                const op = switch (lst.items[0].*) {
+                    .symbol => |s| s,
+                    .owned_symbol => |s| s,
+                    else => unreachable,
+                };
+                if (std.mem.eql(u8, op, "*")) {
+                    // (* num base) pattern
+                    if (lst.items[1].* == .number) {
+                        return .{ .coeff = lst.items[1].number, .base = lst.items[2], .owns_base = false };
+                    }
+                    // (* base num) pattern
+                    if (lst.items[2].* == .number) {
+                        return .{ .coeff = lst.items[2].number, .base = lst.items[1], .owns_base = false };
+                    }
+                }
+            }
+        }
+    }
+    // No coefficient found - implicit coefficient of 1
+    return .{ .coeff = null, .base = term, .owns_base = false };
+}
+
 /// Takes ownership of args and returns the simplified result.
 fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
-    // Combine like terms: x + x -> 2*x
+    // Combine like terms with coefficients: 2x + 3x -> 5x
+    // Use a fixed-point approach: keep combining until no more changes occur
     if (args.items.len >= 2) {
-        var i: usize = 0;
-        while (i < args.items.len) : (i += 1) {
-            var j: usize = i + 1;
-            while (j < args.items.len) {
-                if (exprEqual(args.items[i], args.items[j])) {
-                    // Free the duplicate
-                    const dup = args.orderedRemove(j);
-                    dup.deinit(allocator);
-                    allocator.destroy(dup);
+        var changed = true;
+        while (changed) {
+            changed = false;
+            var i: usize = 0;
+            outer: while (i < args.items.len) : (i += 1) {
+                const cb_i = extractCoeffBase(args.items[i]);
+                const coeff_i = cb_i.coeff orelse 1.0;
 
-                    // Create 2 * x (we already own args.items[i])
-                    const mul_op = try makeSymbol(allocator, "*");
-                    const two = try makeNumber(allocator, 2);
-                    const mul_expr = try makeList(allocator, &[_]*Expr{ mul_op, two, args.items[i] });
+                var j: usize = i + 1;
+                while (j < args.items.len) {
+                    const cb_j = extractCoeffBase(args.items[j]);
 
-                    // Replace the first term
-                    args.items[i] = mul_expr;
-                    continue;
+                    // Check if bases are equal
+                    if (exprEqual(cb_i.base, cb_j.base)) {
+                        const coeff_j = cb_j.coeff orelse 1.0;
+                        const new_coeff = coeff_i + coeff_j;
+
+                        // Free the second term completely
+                        const dup = args.orderedRemove(j);
+                        dup.deinit(allocator);
+                        allocator.destroy(dup);
+
+                        // Create new_coeff * base
+                        // First, copy the base since the original term owns it
+                        const base_copy = try copyExpr(cb_i.base, allocator);
+
+                        // Free the original term
+                        args.items[i].deinit(allocator);
+                        allocator.destroy(args.items[i]);
+
+                        // Build new term
+                        if (new_coeff == 0) {
+                            base_copy.deinit(allocator);
+                            allocator.destroy(base_copy);
+                            args.items[i] = try makeNumber(allocator, 0);
+                        } else if (new_coeff == 1) {
+                            args.items[i] = base_copy;
+                        } else {
+                            const mul_op = try makeSymbol(allocator, "*");
+                            const coeff_expr = try makeNumber(allocator, new_coeff);
+                            const mul_expr = try makeList(allocator, &[_]*Expr{ mul_op, coeff_expr, base_copy });
+                            args.items[i] = mul_expr;
+                        }
+                        // Mark changed and restart the outer loop to re-extract fresh coeffbase
+                        changed = true;
+                        continue :outer;
+                    }
+                    j += 1;
                 }
-                j += 1;
             }
         }
     }
 
-    // x + 0 = x
-    if (args.items.len == 2) {
-        if (args.items[1].* == .number and args.items[1].number == 0) {
-            const result = args.items[0];
-            args.items[1].deinit(allocator);
-            allocator.destroy(args.items[1]);
-            args.deinit(allocator);
-            return result;
+    // Remove zeros from the sum
+    {
+        var i: usize = 0;
+        while (i < args.items.len) {
+            if (args.items[i].* == .number and args.items[i].number == 0) {
+                const zero = args.orderedRemove(i);
+                zero.deinit(allocator);
+                allocator.destroy(zero);
+            } else {
+                i += 1;
+            }
         }
-        if (args.items[0].* == .number and args.items[0].number == 0) {
-            const result = args.items[1];
-            args.items[0].deinit(allocator);
-            allocator.destroy(args.items[0]);
-            args.deinit(allocator);
-            return result;
-        }
+    }
+
+    // Empty sum (all zeros) = 0
+    if (args.items.len == 0) {
+        args.deinit(allocator);
+        return try makeNumber(allocator, 0);
     }
 
     // Single argument: return it directly

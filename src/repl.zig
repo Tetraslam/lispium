@@ -297,6 +297,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
     try env.putBuiltin("^", builtins.builtin_power);
     try env.putBuiltin("pow", builtins.builtin_power);
     try env.putBuiltin("simplify", builtins.builtin_simplify);
+    try env.putBuiltin("evalf", builtins.builtin_evalf);
+    try env.putBuiltin("N", builtins.builtin_evalf);
     try env.putBuiltin("diff", builtins.builtin_diff);
     try env.putBuiltin("integrate", builtins.builtin_integrate);
     try env.putBuiltin("expand", builtins.builtin_expand);

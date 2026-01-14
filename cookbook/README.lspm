@@ -25,7 +25,7 @@
 ; Transcendental:   exp ln log sqrt
 ; Special Funcs:    gamma beta besselj bessely erf erfc digamma
 ; Calculus:         diff integrate taylor limit dsolve
-; Algebra:          simplify expand factor solve collect substitute
+; Algebra:          simplify expand factor solve collect substitute evalf N
 ; Polynomials:      coeffs polydiv polygcd polylcm partial-fractions
 ; Interpolation:    lagrange newton-interp
 ; Root Finding:     newton-raphson bisection
@@ -60,4 +60,36 @@
 ; Try: (simplify (+ x x))
 ;
 ; For help in REPL, type: help
+;
+; Vectors & Matrices Quick Start
+; ------------------------------
+; Vectors use the vector function:
+;   (vector 1 2 3)                    => ⟨1, 2, 3⟩
+;   (dot (vector 1 2) (vector 3 4))   => 11
+;   (cross (vector 1 0 0) (vector 0 1 0)) => ⟨0, 0, 1⟩
+;   (norm (vector 3 4))               => 5
+;
+; Matrices use the matrix function with rows:
+;   (matrix (1 2) (3 4))              ; 2x2 matrix
+;   (matrix (a b c) (d e f))          ; 2x3 symbolic matrix
+;   (det (matrix (1 2) (3 4)))        => -2
+;   (matmul A B)                      ; matrix multiplication
+;   (linsolve A b)                    ; solve Ax = b
+;
+; See linear_algebra.lspm for more examples
+;
+; Numeric Evaluation
+; ------------------
+; Use evalf or N to evaluate symbolic constants:
+;   (evalf pi)                        => 3.141592653589793
+;   (N e)                             => 2.718281828459045
+;   (evalf (sin pi))                  => 0
+;   (evalf (+ pi e))                  => 5.859874482048838
+;
+; Equation Solving
+; ----------------
+; solve accepts expr=0 form or equation syntax:
+;   (solve (- x 5) x)                 => 5   (x - 5 = 0)
+;   (solve (= x 5) x)                 => 5   (x = 5)
+;   (solve (= (* x x) 4) x)           => {2, -2}
 

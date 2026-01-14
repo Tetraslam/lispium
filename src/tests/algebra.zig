@@ -509,3 +509,48 @@ test "solve: quadratic x^2 + 1 (complex solutions)" {
     defer allocator.free(str);
     try testing.expectEqualStrings("(solutions (complex 0 1) (complex 0 -1))", str);
 }
+
+test "solve: equation syntax (= left right)" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+
+    // (solve (= x 5) x) should give x = 5
+    const expr = try h.parseExpr(allocator, "(solve (= x 5) x)");
+    defer {
+        expr.deinit(allocator);
+        allocator.destroy(expr);
+    }
+
+    const result = try h.eval(expr, &env);
+    defer {
+        result.deinit(allocator);
+        allocator.destroy(result);
+    }
+
+    try testing.expect(result.* == .number);
+    try testing.expectEqual(@as(f64, 5), result.number);
+}
+
+test "solve: equation syntax x^2 = 4" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+
+    const expr = try h.parseExpr(allocator, "(solve (= (* x x) 4) x)");
+    defer {
+        expr.deinit(allocator);
+        allocator.destroy(expr);
+    }
+
+    const result = try h.eval(expr, &env);
+    defer {
+        result.deinit(allocator);
+        allocator.destroy(result);
+    }
+
+    try testing.expect(result.* == .list);
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(solutions 2 -2)", str);
+}

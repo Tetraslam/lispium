@@ -80,6 +80,8 @@ pub fn setupEnv(allocator: std.mem.Allocator) !Env {
     try env.putBuiltin("lcm", builtins.builtin_lcm);
     try env.putBuiltin("modpow", builtins.builtin_modpow);
     try env.putBuiltin("simplify", builtins.builtin_simplify);
+    try env.putBuiltin("evalf", builtins.builtin_evalf);
+    try env.putBuiltin("N", builtins.builtin_evalf);
     try env.putBuiltin("diff", builtins.builtin_diff);
     try env.putBuiltin("integrate", builtins.builtin_integrate);
     try env.putBuiltin("expand", builtins.builtin_expand);
