@@ -24,8 +24,10 @@ test "dsolve: dy/dx = x" {
         allocator.destroy(result);
     }
 
-    // Should return a list result (equation or dsolve symbolic form)
     try testing.expect(result.* == .list);
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(= y (+ (* 0.5 (^ x 2)) C))", str);
 }
 
 test "dsolve: dy/dx = 2x" {
@@ -47,6 +49,9 @@ test "dsolve: dy/dx = 2x" {
     }
 
     try testing.expect(result.* == .list);
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(= y (+ (* 2 (* 0.5 (^ x 2))) C))", str);
 }
 
 test "dsolve: dy/dx = constant" {
@@ -68,6 +73,9 @@ test "dsolve: dy/dx = constant" {
     }
 
     try testing.expect(result.* == .list);
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(= y (+ (* 3 x) C))", str);
 }
 
 // ============================================================================
@@ -94,6 +102,9 @@ test "dsolve: dy/dx = y (exponential growth)" {
 
     // Should return a result (might be equation or unsolved symbolic form)
     try testing.expect(result.* == .list);
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(= y (* C (exp x)))", str);
 }
 
 test "dsolve: dy/dx = 2*y" {
@@ -115,6 +126,9 @@ test "dsolve: dy/dx = 2*y" {
     }
 
     try testing.expect(result.* == .list);
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(= y (* C (exp (* 2 x))))", str);
 }
 
 // ============================================================================

@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: Tetraslam.Lispium
-PackageVersion: 0.1.0
+PackageVersion: 0.5.0
 PackageLocale: en-US
 Publisher: Tetraslam
 PublisherUrl: https://github.com/Tetraslam
@@ -27,6 +27,6 @@ Tags:
   - lisp
   - repl
   - cli
-ReleaseNotesUrl: https://github.com/Tetraslam/lispium/releases/tag/v0.1.0
+ReleaseNotesUrl: https://github.com/Tetraslam/lispium/releases/tag/v0.5.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

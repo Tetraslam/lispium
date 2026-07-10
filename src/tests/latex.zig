@@ -166,8 +166,7 @@ test "latex: sqrt" {
     var env = try h.setupEnv(allocator);
     defer env.deinit();
 
-    // Note: (sqrt x) evaluates to (^ x 0.5) before latex conversion
-    // So the LaTeX output is x^{0.5} not \sqrt{x}
+    // (sqrt x) evaluates to (^ x 0.5), which latex renders as \sqrt{x}
     const expr = try h.parseExpr(allocator, "(latex (sqrt x))");
     defer {
         expr.deinit(allocator);
@@ -181,7 +180,7 @@ test "latex: sqrt" {
     }
 
     try testing.expect(result.* == .owned_symbol);
-    try testing.expectEqualStrings("x^{0.5}", result.owned_symbol);
+    try testing.expectEqualStrings("\\sqrt{x}", result.owned_symbol);
 }
 
 test "latex: sin" {

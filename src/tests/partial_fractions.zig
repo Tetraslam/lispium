@@ -30,7 +30,7 @@ test "partial-fractions: 1/(x^2 - 1)" {
     // Roots are r1=1 and r2=-1
     // A = 1 / (1*(1-(-1))) = 1/2 = 0.5
     // B = 1 / (1*(-1-1)) = 1/(-2) = -0.5
-    try testing.expectEqualStrings("(+ (/ 0.5 (- x 1)) (/ -0.5 (- x -1)))", str);
+    try testing.expectEqualStrings("(+ (/ 0.5 (- x 1)) (/ -0.5 (+ x 1)))", str);
 }
 
 test "partial-fractions: 1/(x^2 - 4)" {
@@ -56,7 +56,7 @@ test "partial-fractions: 1/(x^2 - 4)" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(+ (/ 0.25 (- x 2)) (/ -0.25 (- x -2)))", str);
+    try testing.expectEqualStrings("(+ (/ 0.25 (- x 2)) (/ -0.25 (+ x 2)))", str);
 }
 
 test "partial-fractions: 1/(x^2 + 3x + 2)" {
@@ -83,7 +83,7 @@ test "partial-fractions: 1/(x^2 + 3x + 2)" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(+ (/ 1 (- x -1)) (/ -1 (- x -2)))", str);
+    try testing.expectEqualStrings("(+ (/ 1 (+ x 1)) (/ -1 (+ x 2)))", str);
 }
 
 test "partial-fractions: x/(x^2 - 1)" {
@@ -110,7 +110,7 @@ test "partial-fractions: x/(x^2 - 1)" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(+ (/ 0.5 (- x 1)) (/ 0.5 (- x -1)))", str);
+    try testing.expectEqualStrings("(+ (/ 0.5 (- x 1)) (/ 0.5 (+ x 1)))", str);
 }
 
 // ============================================================================

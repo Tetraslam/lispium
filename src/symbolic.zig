@@ -4,6 +4,9 @@ const Expr = @import("parser.zig").Expr;
 pub const SimplifyError = error{
     OutOfMemory,
     RecursionLimit,
+    /// The requested operation is mathematically undefined at the given
+    /// point (e.g. a Taylor expansion at a singularity).
+    Undefined,
 };
 
 const MAX_RECURSION_DEPTH = 100;
@@ -300,6 +303,77 @@ fn extractCoeffBase(term: *Expr) CoeffBase {
 }
 
 /// Takes ownership of args and returns the simplified result.
+/// Decomposes an expression into (base, numeric exponent) for power-law
+/// simplification: x -> (x, 1); (^ x n) -> (x, n); (/ 1 x) -> (x, -1).
+const BaseExp = struct { base: *const Expr, exp: ?f64 };
+
+fn extractBaseExp(e: *const Expr) BaseExp {
+    if (e.* == .list and e.list.items.len == 3 and e.list.items[0].* == .symbol) {
+        if (std.mem.eql(u8, e.list.items[0].symbol, "^")) {
+            const ex = e.list.items[2];
+            if (ex.* == .number) return .{ .base = e.list.items[1], .exp = ex.number };
+            return .{ .base = e.list.items[1], .exp = null };
+        }
+        if (std.mem.eql(u8, e.list.items[0].symbol, "/")) {
+            const numer = e.list.items[1];
+            if (numer.* == .number and numer.number == 1) {
+                const inner = extractBaseExp(e.list.items[2]);
+                if (inner.exp) |n| return .{ .base = inner.base, .exp = -n };
+            }
+        }
+    }
+    return .{ .base = e, .exp = 1 };
+}
+
+/// Builds base^exp with the trivial cases folded (exp 0 -> 1, exp 1 -> base).
+fn makePowerSimplified(base: *const Expr, exp: f64, allocator: std.mem.Allocator) SimplifyError!*Expr {
+    if (exp == 0) return try makeNumber(allocator, 1);
+    const base_copy = try copyExpr(base, allocator);
+    if (exp == 1) return base_copy;
+    const exp_expr = try makeNumber(allocator, exp);
+    return try makeBinOp(allocator, "^", base_copy, exp_expr);
+}
+
+/// If e is (^ (fname u) 2), returns u; otherwise null.
+fn trigSquareArg(e: *const Expr, fname: []const u8) ?*const Expr {
+    if (e.* != .list or e.list.items.len != 3) return null;
+    if (e.list.items[0].* != .symbol or !std.mem.eql(u8, e.list.items[0].symbol, "^")) return null;
+    if (e.list.items[2].* != .number or e.list.items[2].number != 2) return null;
+    const inner = e.list.items[1];
+    if (inner.* != .list or inner.list.items.len != 2) return null;
+    if (inner.list.items[0].* != .symbol or !std.mem.eql(u8, inner.list.items[0].symbol, fname)) return null;
+    return inner.list.items[1];
+}
+
+/// Structural equality that also treats multiplications as commutative,
+/// so x*y and y*x are recognized as like terms.
+fn exprEqualCanonical(a: *const Expr, b: *const Expr) bool {
+    if (exprEqual(a, b)) return true;
+    if (a.* != .list or b.* != .list) return false;
+    const la = a.list.items;
+    const lb = b.list.items;
+    if (la.len != lb.len or la.len == 0) return false;
+    if (la[0].* != .symbol or lb[0].* != .symbol) return false;
+    if (!std.mem.eql(u8, la[0].symbol, lb[0].symbol)) return false;
+    if (!std.mem.eql(u8, la[0].symbol, "*") and !std.mem.eql(u8, la[0].symbol, "+")) return false;
+
+    // Multiset match of the operands
+    var used = [_]bool{false} ** 16;
+    if (la.len - 1 > used.len) return false;
+    for (la[1..]) |ea| {
+        var found = false;
+        for (lb[1..], 0..) |eb, k| {
+            if (!used[k] and exprEqualCanonical(ea, eb)) {
+                used[k] = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
 fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
     // Combine like terms with coefficients: 2x + 3x -> 5x
     // Use a fixed-point approach: keep combining until no more changes occur
@@ -316,8 +390,8 @@ fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) S
                 while (j < args.items.len) {
                     const cb_j = extractCoeffBase(args.items[j]);
 
-                    // Check if bases are equal
-                    if (exprEqual(cb_i.base, cb_j.base)) {
+                    // Check if bases are equal (commutative-aware)
+                    if (exprEqualCanonical(cb_i.base, cb_j.base)) {
                         const coeff_j = cb_j.coeff orelse 1.0;
                         const new_coeff = coeff_i + coeff_j;
 
@@ -357,6 +431,36 @@ fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) S
         }
     }
 
+    // Pythagorean identity: sin(u)^2 + cos(u)^2 -> 1
+    if (args.items.len >= 2) {
+        var changed = true;
+        while (changed) {
+            changed = false;
+            var i: usize = 0;
+            outer2: while (i < args.items.len) : (i += 1) {
+                const sin_arg = trigSquareArg(args.items[i], "sin") orelse continue;
+                var j: usize = 0;
+                while (j < args.items.len) : (j += 1) {
+                    if (j == i) continue;
+                    const cos_arg = trigSquareArg(args.items[j], "cos") orelse continue;
+                    if (exprEqual(sin_arg, cos_arg)) {
+                        // Replace the sin^2 term with 1 and drop the cos^2 term
+                        const hi = @max(i, j);
+                        const lo = @min(i, j);
+                        const removed_hi = args.orderedRemove(hi);
+                        removed_hi.deinit(allocator);
+                        allocator.destroy(removed_hi);
+                        args.items[lo].deinit(allocator);
+                        allocator.destroy(args.items[lo]);
+                        args.items[lo] = try makeNumber(allocator, 1);
+                        changed = true;
+                        continue :outer2;
+                    }
+                }
+            }
+        }
+    }
+
     // Remove zeros from the sum
     {
         var i: usize = 0;
@@ -389,6 +493,66 @@ fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) S
 
 /// Takes ownership of args and returns the simplified result.
 fn simplifyMultiplication(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
+    // Any zero factor annihilates the product (any arity)
+    for (args.items) |arg| {
+        if (arg.* == .number and arg.number == 0) {
+            for (args.items) |a| {
+                a.deinit(allocator);
+                allocator.destroy(a);
+            }
+            args.deinit(allocator);
+            return try makeNumber(allocator, 0);
+        }
+    }
+
+    // Power laws: combine equal bases with numeric exponents,
+    // e.g. x * x -> x^2, x^2 * x^3 -> x^5, x * (/ 1 x) -> 1
+    if (args.items.len >= 2) {
+        var changed = true;
+        while (changed) {
+            changed = false;
+            var i: usize = 0;
+            combine: while (i < args.items.len) : (i += 1) {
+                if (args.items[i].* == .number) continue;
+                const be_i = extractBaseExp(args.items[i]);
+                const exp_i = be_i.exp orelse continue;
+                if (be_i.base.* == .number) continue;
+
+                var j: usize = i + 1;
+                while (j < args.items.len) : (j += 1) {
+                    if (args.items[j].* == .number) continue;
+                    const be_j = extractBaseExp(args.items[j]);
+                    const exp_j = be_j.exp orelse continue;
+                    if (exprEqual(be_i.base, be_j.base)) {
+                        const combined = try makePowerSimplified(be_i.base, exp_i + exp_j, allocator);
+                        const removed = args.orderedRemove(j);
+                        removed.deinit(allocator);
+                        allocator.destroy(removed);
+                        args.items[i].deinit(allocator);
+                        allocator.destroy(args.items[i]);
+                        args.items[i] = combined;
+                        changed = true;
+                        continue :combine;
+                    }
+                }
+            }
+        }
+
+        // Drop multiplicative identity factors introduced by combining
+        if (args.items.len > 1) {
+            var i: usize = 0;
+            while (i < args.items.len and args.items.len > 1) {
+                if (args.items[i].* == .number and args.items[i].number == 1) {
+                    const one = args.orderedRemove(i);
+                    one.deinit(allocator);
+                    allocator.destroy(one);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
     // x * 1 = x, x * 0 = 0
     if (args.items.len == 2) {
         if (args.items[1].* == .number) {
@@ -434,12 +598,54 @@ fn simplifyMultiplication(args: *std.ArrayList(*Expr), allocator: std.mem.Alloca
         return result;
     }
 
+    // (* -1 x) -> (- x): canonical unary negation
+    if (args.items.len == 2 and args.items[0].* == .number and args.items[0].number == -1) {
+        const neg_op = try makeSymbol(allocator, "-");
+        const operand = args.items[1];
+        args.items[0].deinit(allocator);
+        allocator.destroy(args.items[0]);
+        args.deinit(allocator);
+        return try makeList(allocator, &[_]*Expr{ neg_op, operand });
+    }
+
     return try buildResultList("*", args, allocator);
 }
 
 /// Takes ownership of args and returns the simplified result.
 fn simplifySubtraction(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
+    // Unary minus: fold (- number) and (- (- x)) -> x
+    if (args.items.len == 1) {
+        const arg = args.items[0];
+        if (arg.* == .number) {
+            const val = -arg.number;
+            arg.deinit(allocator);
+            allocator.destroy(arg);
+            args.deinit(allocator);
+            return try makeNumber(allocator, val);
+        }
+        // Double negation: (- (- x)) -> x
+        if (arg.* == .list and arg.list.items.len == 2 and
+            arg.list.items[0].* == .symbol and std.mem.eql(u8, arg.list.items[0].symbol, "-"))
+        {
+            const inner = try copyExpr(arg.list.items[1], allocator);
+            arg.deinit(allocator);
+            allocator.destroy(arg);
+            args.deinit(allocator);
+            return inner;
+        }
+        return try buildResultList("-", args, allocator);
+    }
     if (args.items.len == 2) {
+        // Numeric subtraction folds directly
+        if (args.items[0].* == .number and args.items[1].* == .number) {
+            const val = args.items[0].number - args.items[1].number;
+            for (args.items) |arg| {
+                arg.deinit(allocator);
+                allocator.destroy(arg);
+            }
+            args.deinit(allocator);
+            return try makeNumber(allocator, val);
+        }
         // x - x = 0
         if (exprEqual(args.items[0], args.items[1])) {
             for (args.items) |arg| {
@@ -456,6 +662,16 @@ fn simplifySubtraction(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator
             allocator.destroy(args.items[1]);
             args.deinit(allocator);
             return result;
+        }
+        // x - (-n) = x + n (canonical display for negative constants)
+        if (args.items[1].* == .number and args.items[1].number < 0) {
+            const lhs = args.items[0];
+            const n = -args.items[1].number;
+            args.items[1].deinit(allocator);
+            allocator.destroy(args.items[1]);
+            args.deinit(allocator);
+            const n_expr = try makeNumber(allocator, n);
+            return try makeBinOp(allocator, "+", lhs, n_expr);
         }
     }
 
@@ -485,6 +701,23 @@ fn simplifyDivision(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) S
             allocator.destroy(args.items[1]);
             args.deinit(allocator);
             return result;
+        }
+        // Power laws: x^a / x^b -> x^(a-b), e.g. x^2 / x -> x
+        {
+            const be_n = extractBaseExp(args.items[0]);
+            const be_d = extractBaseExp(args.items[1]);
+            if (be_n.exp != null and be_d.exp != null and
+                be_n.base.* != .number and exprEqual(be_n.base, be_d.base))
+            {
+                const new_exp = be_n.exp.? - be_d.exp.?;
+                const combined = try makePowerSimplified(be_n.base, new_exp, allocator);
+                for (args.items) |arg| {
+                    arg.deinit(allocator);
+                    allocator.destroy(arg);
+                }
+                args.deinit(allocator);
+                return combined;
+            }
         }
     }
 
@@ -541,6 +774,27 @@ fn simplifyPower(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) Simp
             args.deinit(allocator);
             return try makeNumber(allocator, result_val);
         }
+        // Nested powers: (^ (^ x a) b) -> (^ x (a*b)) when b is an integer
+        // (only integer outer exponents are always sound for real x)
+        if (args.items[1].* == .number and args.items[1].number == @floor(args.items[1].number)) {
+            const inner = args.items[0];
+            if (inner.* == .list and inner.list.items.len == 3 and
+                inner.list.items[0].* == .symbol and std.mem.eql(u8, inner.list.items[0].symbol, "^") and
+                inner.list.items[2].* == .number)
+            {
+                const combined = try makePowerSimplified(
+                    inner.list.items[1],
+                    inner.list.items[2].number * args.items[1].number,
+                    allocator,
+                );
+                for (args.items) |arg| {
+                    arg.deinit(allocator);
+                    allocator.destroy(arg);
+                }
+                args.deinit(allocator);
+                return combined;
+            }
+        }
     }
 
     return try buildResultList("^", args, allocator);
@@ -558,6 +812,14 @@ fn simplifySin(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator, depth:
 
     // sin(0) = 0
     if (arg.* == .number and arg.number == 0) {
+        arg.deinit(allocator);
+        allocator.destroy(arg);
+        args.deinit(allocator);
+        return try makeNumber(allocator, 0);
+    }
+
+    // sin(pi) = 0
+    if (arg.* == .symbol and std.mem.eql(u8, arg.symbol, "pi")) {
         arg.deinit(allocator);
         allocator.destroy(arg);
         args.deinit(allocator);
@@ -583,6 +845,14 @@ fn simplifyCos(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator, depth:
         return try makeNumber(allocator, 1);
     }
 
+    // cos(pi) = -1
+    if (arg.* == .symbol and std.mem.eql(u8, arg.symbol, "pi")) {
+        arg.deinit(allocator);
+        allocator.destroy(arg);
+        args.deinit(allocator);
+        return try makeNumber(allocator, -1);
+    }
+
     return try buildResultList("cos", args, allocator);
 }
 
@@ -594,6 +864,14 @@ fn simplifyTan(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator, depth:
 
     // tan(0) = 0
     if (arg.* == .number and arg.number == 0) {
+        arg.deinit(allocator);
+        allocator.destroy(arg);
+        args.deinit(allocator);
+        return try makeNumber(allocator, 0);
+    }
+
+    // tan(pi) = 0
+    if (arg.* == .symbol and std.mem.eql(u8, arg.symbol, "pi")) {
         arg.deinit(allocator);
         allocator.destroy(arg);
         args.deinit(allocator);
@@ -830,10 +1108,36 @@ fn diffInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allo
 
                         // n * u^(n-1) * du
                         return try makeBinOp(allocator, "*", coeff_times_power, du);
+                    } else if (!containsVariable(base, var_name)) {
+                        // Constant base: d/dx(a^v) = a^v * ln(a) * dv/dx
+                        const dv = try diffInternal(exp, var_name, allocator);
+                        const ln_op = try makeSymbol(allocator, "ln");
+                        const base_copy = try copyExpr(base, allocator);
+                        const ln_a = try makeList(allocator, &[_]*Expr{ ln_op, base_copy });
+                        const pow_copy = try copyExpr(expr, allocator);
+                        const pow_ln = try makeBinOp(allocator, "*", pow_copy, ln_a);
+                        return try makeBinOp(allocator, "*", pow_ln, dv);
                     } else {
-                        // For general u^v, use d/dx(u^v) = u^v * (v' * ln(u) + v * u'/u)
-                        // This requires ln function, so for now we return a copy
-                        return try copyExpr(expr, allocator);
+                        // General case: d/dx(u^v) = u^v * (v' ln(u) + v u'/u)
+                        const du = try diffInternal(base, var_name, allocator);
+                        const dv = try diffInternal(exp, var_name, allocator);
+
+                        // v' * ln(u)
+                        const ln_op = try makeSymbol(allocator, "ln");
+                        const base_copy = try copyExpr(base, allocator);
+                        const ln_u = try makeList(allocator, &[_]*Expr{ ln_op, base_copy });
+                        const term1 = try makeBinOp(allocator, "*", dv, ln_u);
+
+                        // v * u'/u
+                        const exp_copy = try copyExpr(exp, allocator);
+                        const base_copy2 = try copyExpr(base, allocator);
+                        const du_over_u = try makeBinOp(allocator, "/", du, base_copy2);
+                        const term2 = try makeBinOp(allocator, "*", exp_copy, du_over_u);
+
+                        // u^v * (term1 + term2)
+                        const inner_sum = try makeBinOp(allocator, "+", term1, term2);
+                        const pow_copy = try copyExpr(expr, allocator);
+                        return try makeBinOp(allocator, "*", pow_copy, inner_sum);
                     }
                 }
             } else if (std.mem.eql(u8, op.symbol, "sin")) {
@@ -1115,12 +1419,89 @@ fn diffInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allo
 
                     return try makeBinOp(allocator, "*", inv, du);
                 }
+            } else if (std.mem.eql(u8, op.symbol, "abs")) {
+                // d/dx(|u|) = sign(u) * du/dx
+                if (lst.items.len == 2) {
+                    const u = lst.items[1];
+                    const du = try diffInternal(u, var_name, allocator);
+
+                    const sign_op = try makeSymbol(allocator, "sign");
+                    const u_copy = try copyExpr(u, allocator);
+                    const sign_u = try makeList(allocator, &[_]*Expr{ sign_op, u_copy });
+
+                    return try makeBinOp(allocator, "*", sign_u, du);
+                }
             }
 
-            // Unknown operation - return copy of input
-            return try copyExpr(expr, allocator);
+            // Expressions not containing the variable are constants
+            if (!containsVariable(expr, var_name)) {
+                return try makeNumber(allocator, 0);
+            }
+
+            // Unknown operation: return an inert (diff expr var) form rather
+            // than silently returning a wrong derivative
+            const diff_op = try makeSymbol(allocator, "diff");
+            const expr_copy = try copyExpr(expr, allocator);
+            const var_sym_str = try allocator.dupe(u8, var_name);
+            const var_sym = try allocator.create(Expr);
+            var_sym.* = .{ .owned_symbol = var_sym_str };
+            return try makeList(allocator, &[_]*Expr{ diff_op, expr_copy, var_sym });
         },
     }
+}
+
+/// True when the expression is (^ var 2).
+fn isVarSquared(e: *const Expr, var_name: []const u8) bool {
+    if (e.* != .list or e.list.items.len != 3) return false;
+    if (e.list.items[0].* != .symbol or !std.mem.eql(u8, e.list.items[0].symbol, "^")) return false;
+    if (e.list.items[1].* != .symbol or !std.mem.eql(u8, e.list.items[1].symbol, var_name)) return false;
+    return e.list.items[2].* == .number and e.list.items[2].number == 2;
+}
+
+/// Integration by parts for the fixed patterns x*sin(x), x*cos(x), x*exp(x).
+/// Returns null when the product doesn't match.
+fn integrateByParts(u: *const Expr, v: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!?*Expr {
+    // Require u == var and v == (f var) for f in {sin, cos, exp}
+    if (u.* != .symbol or !std.mem.eql(u8, u.symbol, var_name)) return null;
+    if (v.* != .list or v.list.items.len != 2) return null;
+    if (v.list.items[0].* != .symbol) return null;
+    const f = v.list.items[0].symbol;
+    const arg = v.list.items[1];
+    if (arg.* != .symbol or !std.mem.eql(u8, arg.symbol, var_name)) return null;
+
+    const x1 = try makeSymbol(allocator, var_name);
+    if (std.mem.eql(u8, f, "sin")) {
+        // ∫x sin(x) dx = sin(x) - x cos(x)
+        const sin_op = try makeSymbol(allocator, "sin");
+        const x2 = try makeSymbol(allocator, var_name);
+        const sin_x = try makeList(allocator, &[_]*Expr{ sin_op, x2 });
+        const cos_op = try makeSymbol(allocator, "cos");
+        const x3 = try makeSymbol(allocator, var_name);
+        const cos_x = try makeList(allocator, &[_]*Expr{ cos_op, x3 });
+        const x_cos = try makeBinOp(allocator, "*", x1, cos_x);
+        return try makeBinOp(allocator, "-", sin_x, x_cos);
+    }
+    if (std.mem.eql(u8, f, "cos")) {
+        // ∫x cos(x) dx = cos(x) + x sin(x)
+        const cos_op = try makeSymbol(allocator, "cos");
+        const x2 = try makeSymbol(allocator, var_name);
+        const cos_x = try makeList(allocator, &[_]*Expr{ cos_op, x2 });
+        const sin_op = try makeSymbol(allocator, "sin");
+        const x3 = try makeSymbol(allocator, var_name);
+        const sin_x = try makeList(allocator, &[_]*Expr{ sin_op, x3 });
+        const x_sin = try makeBinOp(allocator, "*", x1, sin_x);
+        return try makeBinOp(allocator, "+", cos_x, x_sin);
+    }
+    if (std.mem.eql(u8, f, "exp")) {
+        // ∫x e^x dx = (x - 1) e^x
+        const one = try makeNumber(allocator, 1);
+        const x_minus_1 = try makeBinOp(allocator, "-", x1, one);
+        const exp_op = try makeSymbol(allocator, "exp");
+        const x2 = try makeSymbol(allocator, var_name);
+        const exp_x = try makeList(allocator, &[_]*Expr{ exp_op, x2 });
+        return try makeBinOp(allocator, "*", x_minus_1, exp_x);
+    }
+    return null;
 }
 
 /// Integrates an expression with respect to a variable and simplifies the result.
@@ -1211,6 +1592,14 @@ fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem
                         const int_f = try integrateInternal(first, var_name, allocator);
                         return try makeBinOp(allocator, "*", c, int_f);
                     }
+
+                    // Integration by parts for x*sin(x), x*cos(x), x*exp(x)
+                    if (try integrateByParts(first, second, var_name, allocator)) |result| {
+                        return result;
+                    }
+                    if (try integrateByParts(second, first, var_name, allocator)) |result| {
+                        return result;
+                    }
                 }
             } else if (std.mem.eql(u8, op.symbol, "^")) {
                 // Power rule: ∫x^n dx = x^(n+1)/(n+1)
@@ -1237,6 +1626,24 @@ fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem
                             }
                         }
                     }
+
+                    // ∫e^x dx = e^x (the built-in constant e as base)
+                    if (base.* == .symbol and std.mem.eql(u8, base.symbol, "e") and
+                        exp.* == .symbol and std.mem.eql(u8, exp.symbol, var_name))
+                    {
+                        return try copyExpr(expr, allocator);
+                    }
+
+                    // ∫a^x dx = a^x / ln(a) for constant a
+                    if (!containsVariable(base, var_name) and
+                        exp.* == .symbol and std.mem.eql(u8, exp.symbol, var_name))
+                    {
+                        const pow_copy = try copyExpr(expr, allocator);
+                        const ln_op = try makeSymbol(allocator, "ln");
+                        const base_copy = try copyExpr(base, allocator);
+                        const ln_a = try makeList(allocator, &[_]*Expr{ ln_op, base_copy });
+                        return try makeBinOp(allocator, "/", pow_copy, ln_a);
+                    }
                 }
             } else if (std.mem.eql(u8, op.symbol, "/")) {
                 // Check for 1/x pattern
@@ -1250,6 +1657,35 @@ fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem
                             const x = try makeSymbol(allocator, var_name);
                             return try makeList(allocator, &[_]*Expr{ ln_op, x });
                         }
+                        // ∫1/(1 + x^2) dx = atan(x)
+                        if (denom.* == .list and denom.list.items.len == 3 and
+                            denom.list.items[0].* == .symbol and std.mem.eql(u8, denom.list.items[0].symbol, "+"))
+                        {
+                            const a = denom.list.items[1];
+                            const b = denom.list.items[2];
+                            const a_is_one = a.* == .number and a.number == 1;
+                            const b_is_one = b.* == .number and b.number == 1;
+                            const a_is_xsq = isVarSquared(a, var_name);
+                            const b_is_xsq = isVarSquared(b, var_name);
+                            if ((a_is_one and b_is_xsq) or (b_is_one and a_is_xsq)) {
+                                const atan_op = try makeSymbol(allocator, "atan");
+                                const x = try makeSymbol(allocator, var_name);
+                                return try makeList(allocator, &[_]*Expr{ atan_op, x });
+                            }
+                        }
+                    }
+                }
+            } else if (std.mem.eql(u8, op.symbol, "tan")) {
+                // ∫tan(x) dx = -ln(cos(x))
+                if (lst.items.len == 2) {
+                    const arg = lst.items[1];
+                    if (arg.* == .symbol and std.mem.eql(u8, arg.symbol, var_name)) {
+                        const cos_op = try makeSymbol(allocator, "cos");
+                        const x = try makeSymbol(allocator, var_name);
+                        const cos_x = try makeList(allocator, &[_]*Expr{ cos_op, x });
+                        const ln_op = try makeSymbol(allocator, "ln");
+                        const ln_cos = try makeList(allocator, &[_]*Expr{ ln_op, cos_x });
+                        return try makeUnaryOp(allocator, "-", ln_cos);
                     }
                 }
             } else if (std.mem.eql(u8, op.symbol, "sin")) {
@@ -1511,7 +1947,10 @@ fn evalNumeric(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*E
                     for (eval_args.items) |arg| sum += arg.number;
                     result_val = sum;
                 } else if (std.mem.eql(u8, op.symbol, "-")) {
-                    if (eval_args.items.len >= 1) {
+                    if (eval_args.items.len == 1) {
+                        // Unary minus: (- x) negates
+                        result_val = -arg0;
+                    } else {
                         var res = arg0;
                         for (eval_args.items[1..]) |arg| res -= arg.number;
                         result_val = res;
@@ -1568,6 +2007,32 @@ fn evalNumeric(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*E
 /// Computes the Taylor series expansion of an expression around a point.
 /// taylor(expr, var_name, point, order) gives the first 'order' terms of the Taylor series.
 /// Returns a NEW expression that the caller owns.
+/// Detects mathematically undefined values inside an expression:
+/// non-finite numbers, division by zero, and ln of a non-positive number.
+fn hasUndefinedValue(expr: *const Expr) bool {
+    switch (expr.*) {
+        .number => |n| return !std.math.isFinite(n),
+        .symbol, .owned_symbol, .lambda => return false,
+        .list => |lst| {
+            if (lst.items.len > 0 and lst.items[0].* == .symbol) {
+                const op = lst.items[0].symbol;
+                if (std.mem.eql(u8, op, "/") and lst.items.len == 3) {
+                    const denom = lst.items[2];
+                    if (denom.* == .number and denom.number == 0) return true;
+                }
+                if (std.mem.eql(u8, op, "ln") and lst.items.len == 2) {
+                    const arg = lst.items[1];
+                    if (arg.* == .number and arg.number <= 0) return true;
+                }
+            }
+            for (lst.items) |item| {
+                if (hasUndefinedValue(item)) return true;
+            }
+            return false;
+        },
+    }
+}
+
 pub fn taylor(expr: *const Expr, var_name: []const u8, point: f64, order: usize, allocator: std.mem.Allocator) SimplifyError!*Expr {
     if (order == 0) {
         return try makeNumber(allocator, 0);
@@ -1602,7 +2067,7 @@ pub fn taylor(expr: *const Expr, var_name: []const u8, point: f64, order: usize,
 
     var factorial: f64 = 1;
 
-    for (0..order) |n| {
+    for (0..order + 1) |n| {
         // Evaluate current derivative at the point
         const deriv_at_point = try substitute(current_deriv, var_name, point_expr, allocator);
         defer {
@@ -1624,6 +2089,10 @@ pub fn taylor(expr: *const Expr, var_name: []const u8, point: f64, order: usize,
             allocator.destroy(simplified_deriv);
         }
 
+        // Reject expansion at a singularity (division by zero, ln 0, or a
+        // non-finite value) instead of emitting garbage terms
+        if (hasUndefinedValue(simplified_deriv)) return SimplifyError.Undefined;
+
         // Update factorial (n! for this term)
         if (n > 0) {
             factorial *= @as(f64, @floatFromInt(n));
@@ -1642,7 +2111,7 @@ pub fn taylor(expr: *const Expr, var_name: []const u8, point: f64, order: usize,
                 // Skip terms with zero coefficient
                 if (coeff_val == 0) {
                     // Differentiate for the next iteration (unless we're done)
-                    if (n < order - 1) {
+                    if (n < order) {
                         const next_deriv = try diff(current_deriv, var_name, allocator);
                         current_deriv.deinit(allocator);
                         allocator.destroy(current_deriv);
@@ -1693,7 +2162,7 @@ pub fn taylor(expr: *const Expr, var_name: []const u8, point: f64, order: usize,
         }
 
         // Differentiate for the next iteration (unless we're done)
-        if (n < order - 1) {
+        if (n < order) {
             const next_deriv = try diff(current_deriv, var_name, allocator);
             current_deriv.deinit(allocator);
             allocator.destroy(current_deriv);
@@ -1885,10 +2354,8 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
                 return try makeSymbol(allocator, "all");
             } else {
                 // No solutions - return empty list
-                const empty_list: std.ArrayList(*Expr) = .empty;
-                const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
-                result.* = .{ .list = empty_list };
-                return result;
+                // Contradiction (e.g. 5 = 0): say so explicitly
+                return try makeSymbol(allocator, "no-solution");
             }
         } else if (coeffs.len == 2) {
             // Linear: a*x + b = 0 => x = -b/a
@@ -1898,10 +2365,8 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
                 if (b == 0) {
                     return try makeSymbol(allocator, "all");
                 } else {
-                    const empty_list: std.ArrayList(*Expr) = .empty;
-                    const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
-                    result.* = .{ .list = empty_list };
-                    return result;
+                    // Contradiction (e.g. 5 = 0): say so explicitly
+                    return try makeSymbol(allocator, "no-solution");
                 }
             }
             // x = -b/a
@@ -1919,10 +2384,8 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
                     if (c == 0) {
                         return try makeSymbol(allocator, "all");
                     } else {
-                        const empty_list: std.ArrayList(*Expr) = .empty;
-                        const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
-                        result.* = .{ .list = empty_list };
-                        return result;
+                        // Contradiction (e.g. 5 = 0): say so explicitly
+                        return try makeSymbol(allocator, "no-solution");
                     }
                 }
                 return try makeNumber(allocator, -c / b);
@@ -2140,14 +2603,14 @@ pub fn factor(expr: *const Expr, var_name: []const u8, allocator: std.mem.Alloca
 
                 // Check if roots are "nice" integers or simple fractions
                 if (isNiceNumber(r1) and isNiceNumber(r2)) {
-                    // a(x - r1)(x - r2)
+                    // a(x - r1)(x - r2); negative roots display as (x + |r|)
                     const x1 = try makeSymbol(allocator, var_name);
-                    const r1_expr = try makeNumber(allocator, r1);
-                    const factor1 = try makeBinOp(allocator, "-", x1, r1_expr);
+                    const r1_expr = try makeNumber(allocator, @abs(r1));
+                    const factor1 = try makeBinOp(allocator, if (r1 < 0) "+" else "-", x1, r1_expr);
 
                     const x2 = try makeSymbol(allocator, var_name);
-                    const r2_expr = try makeNumber(allocator, r2);
-                    const factor2 = try makeBinOp(allocator, "-", x2, r2_expr);
+                    const r2_expr = try makeNumber(allocator, @abs(r2));
+                    const factor2 = try makeBinOp(allocator, if (r2 < 0) "+" else "-", x2, r2_expr);
 
                     const prod = try makeBinOp(allocator, "*", factor1, factor2);
 
@@ -2540,18 +3003,18 @@ pub fn partialFractions(expr: *const Expr, var_name: []const u8, allocator: std.
             }
 
             // Build result: A/(x-r1) + B/(x-r2)
-            // First term: A / (x - r1)
+            // Negative roots display as (x + |r|)
             const a_expr = try makeNumber(allocator, coeff_a);
             const x1 = try makeSymbol(allocator, var_name);
-            const r1_expr = try makeNumber(allocator, r1);
-            const factor1 = try makeBinOp(allocator, "-", x1, r1_expr);
+            const r1_expr = try makeNumber(allocator, @abs(r1));
+            const factor1 = try makeBinOp(allocator, if (r1 < 0) "+" else "-", x1, r1_expr);
             const term1 = try makeBinOp(allocator, "/", a_expr, factor1);
 
             // Second term: B / (x - r2)
             const b_expr = try makeNumber(allocator, coeff_b);
             const x2 = try makeSymbol(allocator, var_name);
-            const r2_expr = try makeNumber(allocator, r2);
-            const factor2 = try makeBinOp(allocator, "-", x2, r2_expr);
+            const r2_expr = try makeNumber(allocator, @abs(r2));
+            const factor2 = try makeBinOp(allocator, if (r2 < 0) "+" else "-", x2, r2_expr);
             const term2 = try makeBinOp(allocator, "/", b_expr, factor2);
 
             // Sum them
@@ -2587,10 +3050,10 @@ pub fn partialFractions(expr: *const Expr, var_name: []const u8, allocator: std.
                 return try copyExpr(expr, allocator);
             }
 
-            // Build: A/(x-r) + B/(x-r)^2
+            // Build: A/(x-r) + B/(x-r)^2 (negative roots display as x + |r|)
             const x1 = try makeSymbol(allocator, var_name);
-            const r_expr1 = try makeNumber(allocator, r);
-            const factor_val = try makeBinOp(allocator, "-", x1, r_expr1);
+            const r_expr1 = try makeNumber(allocator, @abs(r));
+            const factor_val = try makeBinOp(allocator, if (r < 0) "+" else "-", x1, r_expr1);
 
             // Term 1: A / (x - r)
             const a_num = try makeNumber(allocator, coeff_a_val);
@@ -2623,10 +3086,126 @@ pub fn limit(expr: *const Expr, var_name: []const u8, point: f64, allocator: std
     return limitInternal(expr, var_name, point, allocator, 0);
 }
 
+/// Substitutes the point into the expression and evaluates numerically.
+/// Returns the value (which may be +-inf) or null if it isn't numeric.
+fn substituteNumeric(expr: *const Expr, var_name: []const u8, point: f64, allocator: std.mem.Allocator) SimplifyError!?f64 {
+    const point_expr = try makeNumber(allocator, point);
+    defer {
+        point_expr.deinit(allocator);
+        allocator.destroy(point_expr);
+    }
+    const substituted = try substitute(expr, var_name, point_expr, allocator);
+    defer {
+        substituted.deinit(allocator);
+        allocator.destroy(substituted);
+    }
+    const evaluated = try evalNumeric(substituted, allocator);
+    defer {
+        evaluated.deinit(allocator);
+        allocator.destroy(evaluated);
+    }
+    if (evaluated.* == .number) return evaluated.number;
+    return null;
+}
+
+/// Numerically probes a limit by evaluating the expression at points
+/// approaching the limit point. Returns the converged value (snapped to
+/// well-known constants) or null if the samples do not converge.
+fn numericLimitProbe(expr: *const Expr, var_name: []const u8, point: f64, allocator: std.mem.Allocator) SimplifyError!?f64 {
+    var samples: [2]f64 = undefined;
+    const probes: [2]f64 = if (std.math.isInf(point))
+        (if (point > 0) [2]f64{ 1e6, 1e9 } else [2]f64{ -1e6, -1e9 })
+    else
+        [2]f64{ point + 1e-6, point + 1e-9 };
+
+    for (probes, 0..) |p, i| {
+        const v = (try substituteNumeric(expr, var_name, p, allocator)) orelse return null;
+        if (!std.math.isFinite(v)) return null;
+        samples[i] = v;
+    }
+
+    // Require convergence between the two probe scales
+    if (@abs(samples[1] - samples[0]) > 1e-3 * (1 + @abs(samples[1]))) return null;
+
+    const v = samples[1];
+    // Snap to well-known constants
+    if (@abs(v - std.math.e) < 1e-4) return std.math.e;
+    if (@abs(v - std.math.pi) < 1e-4) return std.math.pi;
+    if (@abs(v - @round(v)) < 1e-6) return @round(v);
+    return v;
+}
+
 fn limitInternal(expr: *const Expr, var_name: []const u8, point: f64, allocator: std.mem.Allocator, depth: usize) SimplifyError!*Expr {
     if (depth > 10) {
         // Too much recursion (e.g., repeated L'Hôpital's), return symbolic limit
         return makeLimitExpr(expr, var_name, point, allocator);
+    }
+
+    // Indeterminate power forms (1^inf, 0^0, inf^0): direct substitution
+    // gives a misleading IEEE result (e.g. pow(1, inf) == 1), so handle
+    // f^g via exp(lim g*ln f) BEFORE attempting substitution.
+    if (expr.* == .list and expr.list.items.len == 3 and
+        expr.list.items[0].* == .symbol and std.mem.eql(u8, expr.list.items[0].symbol, "^"))
+    {
+        const base = expr.list.items[1];
+        const expo = expr.list.items[2];
+
+        const base_lim = try limitInternal(base, var_name, point, allocator, depth + 1);
+        defer {
+            base_lim.deinit(allocator);
+            allocator.destroy(base_lim);
+        }
+        const expo_lim = try limitInternal(expo, var_name, point, allocator, depth + 1);
+        defer {
+            expo_lim.deinit(allocator);
+            allocator.destroy(expo_lim);
+        }
+
+        // The sub-limits may refuse to report inf as a value; fall back to
+        // direct numeric substitution to classify the form
+        var base_val: ?f64 = if (base_lim.* == .number) base_lim.number else null;
+        var expo_val: ?f64 = if (expo_lim.* == .number) expo_lim.number else null;
+        if (base_val == null) base_val = try substituteNumeric(base, var_name, point, allocator);
+        if (expo_val == null) expo_val = try substituteNumeric(expo, var_name, point, allocator);
+
+        if (base_val != null and expo_val != null) {
+            const b = base_val.?;
+            const g = expo_val.?;
+            const indeterminate =
+                (b == 1 and std.math.isInf(g)) or
+                (b == 0 and g == 0) or
+                (std.math.isInf(b) and g == 0);
+            if (indeterminate) {
+                // lim f^g = exp(lim (ln f) / (1/g))
+                const ln_op = try makeSymbol(allocator, "ln");
+                const base_copy = try copyExpr(base, allocator);
+                const ln_f = try makeList(allocator, &[_]*Expr{ ln_op, base_copy });
+                defer {
+                    ln_f.deinit(allocator);
+                    allocator.destroy(ln_f);
+                }
+                const one = try makeNumber(allocator, 1);
+                const expo_copy = try copyExpr(expo, allocator);
+                const recip_g = try makeBinOp(allocator, "/", one, expo_copy);
+                defer {
+                    recip_g.deinit(allocator);
+                    allocator.destroy(recip_g);
+                }
+                const inner = try limitDivision(ln_f, recip_g, var_name, point, allocator, depth + 1);
+                defer {
+                    inner.deinit(allocator);
+                    allocator.destroy(inner);
+                }
+                if (inner.* == .number and std.math.isFinite(inner.number)) {
+                    return try makeNumber(allocator, @exp(inner.number));
+                }
+                // L'Hopital didn't converge symbolically: probe numerically
+                if (try numericLimitProbe(expr, var_name, point, allocator)) |val| {
+                    return try makeNumber(allocator, val);
+                }
+                return makeLimitExpr(expr, var_name, point, allocator);
+            }
+        }
     }
 
     // Try direct substitution first
@@ -2656,6 +3235,13 @@ fn limitInternal(expr: *const Expr, var_name: []const u8, point: f64, allocator:
     if (simplified.* == .number) {
         const n = simplified.number;
         if (!std.math.isNan(n) and !std.math.isInf(n)) {
+            // Huge magnitudes come from float substitution near a pole
+            // (e.g. tan near pi/2): report divergence instead
+            if (@abs(n) > 1e14) {
+                simplified.deinit(allocator);
+                allocator.destroy(simplified);
+                return try makeSymbol(allocator, if (n > 0) "inf" else "-inf");
+            }
             return simplified;
         }
     }

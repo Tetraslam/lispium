@@ -45,6 +45,20 @@ jobs:
       - name: Run tests
         run: zig build test --summary all
 
+      - name: Run cookbook examples
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+          for f in cookbook/*.lspm; do
+            echo "== $f"
+            out=$(./zig-out/bin/lispium run "$f" 2>&1)
+            if echo "$out" | grep -qiE "panic|segmentation|eval error|parse error"; then
+              echo "$out"
+              echo "FAILED: $f produced errors"
+              exit 1
+            fi
+          done
+
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe
 

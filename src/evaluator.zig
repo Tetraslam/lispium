@@ -12,10 +12,47 @@ pub const Error = error{
     OutOfMemory,
     InvalidLambda,
     InvalidDefine,
+    InvalidSyntax,
     WrongNumberOfArguments,
 } || BuiltinError || EnvError || symbolic.SimplifyError;
 
+/// Maximum evaluator recursion depth. Prevents native stack overflow from
+/// deeply recursive user code or deeply nested expressions; exceeding it
+/// returns error.RecursionLimit instead of crashing.
+pub const MAX_EVAL_DEPTH = 2000;
+
+/// Maximum number of iterations for (sum ...) and (product ...) loops.
+pub const MAX_LOOP_ITERATIONS: i64 = 10_000_000;
+
+threadlocal var eval_depth: usize = 0;
+
+/// Name of the builtin that most recently reported an error, so the REPL
+/// and CLI can say *which* function rejected its arguments.
+threadlocal var error_context_buf: [64]u8 = undefined;
+threadlocal var error_context_len: usize = 0;
+
+fn setErrorContext(name: []const u8) void {
+    const n = @min(name.len, error_context_buf.len);
+    @memcpy(error_context_buf[0..n], name[0..n]);
+    error_context_len = n;
+}
+
+/// Returns the name of the most recently failing builtin (empty if none),
+/// clearing it in the process.
+pub fn takeErrorContext() []const u8 {
+    const n = error_context_len;
+    error_context_len = 0;
+    return error_context_buf[0..n];
+}
+
 pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
+    eval_depth += 1;
+    defer eval_depth -= 1;
+    if (eval_depth > MAX_EVAL_DEPTH) return Error.RecursionLimit;
+    return evalInner(expr, env);
+}
+
+fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
     switch (expr.*) {
         .number => {
             // Return a copy to ensure the result has independent ownership
@@ -87,6 +124,11 @@ pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
                 if (std.mem.eql(u8, op_expr.symbol, "solve")) {
                     return try evalSolve(expr, env);
                 }
+                // (dsolve equation y x) - special form: the ODE must NOT be
+                // pre-evaluated (otherwise (diff y x) collapses to 0)
+                if (std.mem.eql(u8, op_expr.symbol, "dsolve")) {
+                    return try evalDsolve(expr, env);
+                }
             }
 
             // Evaluate the operator (could be a lambda expression or a symbol)
@@ -129,7 +171,11 @@ pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
             for (expr.list.items[1..]) |arg| {
                 try args.append(env.allocator, try eval(arg, env));
             }
-            const result = try func(args, env);
+            const result = func(args, env) catch |err| {
+                // Remember the failing operator for better error messages
+                setErrorContext(op_expr.symbol);
+                return err;
+            };
             // Free the args - builtin should have copied anything it needs
             for (args.items) |arg| {
                 arg.deinit(env.allocator);
@@ -141,7 +187,9 @@ pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
     }
 }
 
-/// Evaluates (lambda (params...) body) into a Lambda expression
+/// Evaluates (lambda (params...) body) into a Lambda expression.
+/// Free variables in the body that are currently bound in the environment
+/// are captured by value at creation time (closure semantics).
 fn evalLambda(expr: *Expr, env: *Env) Error!*Expr {
     // (lambda (x y) body) - list has 3 elements: lambda, params, body
     if (expr.list.items.len != 3) return Error.InvalidLambda;
@@ -160,12 +208,180 @@ fn evalLambda(expr: *Expr, env: *Env) Error!*Expr {
         try params.append(env.allocator, p.symbol);
     }
 
-    // Copy the body (don't evaluate it yet)
-    const body_copy = try symbolic.copyExpr(body_expr, env.allocator);
+    // Capture free variables by value (don't evaluate the body itself)
+    var shadowed: std.ArrayList([]const u8) = .empty;
+    defer shadowed.deinit(env.allocator);
+    try shadowed.appendSlice(env.allocator, params.items);
+    const body_copy = try captureFreeVars(body_expr, &shadowed, env);
 
     const result = try env.allocator.create(Expr);
     result.* = .{ .lambda = .{ .params = params, .body = body_copy } };
     return result;
+}
+
+fn isShadowed(shadowed: *std.ArrayList([]const u8), name: []const u8) bool {
+    for (shadowed.items) |s| {
+        if (std.mem.eql(u8, s, name)) return true;
+    }
+    return false;
+}
+
+/// Copies an expression, substituting free variables with their current
+/// environment values (capture-by-value closures). Names bound by nested
+/// lambda/let/letrec/sum/product/define forms are respected (shadowed).
+fn captureFreeVars(expr: *const Expr, shadowed: *std.ArrayList([]const u8), env: *Env) Error!*Expr {
+    switch (expr.*) {
+        .number, .lambda => return try symbolic.copyExpr(expr, env.allocator),
+        .symbol, .owned_symbol => {
+            const name = switch (expr.*) {
+                .symbol => |s| s,
+                .owned_symbol => |s| s,
+                else => unreachable,
+            };
+            if (!isShadowed(shadowed, name)) {
+                if (env.variables.get(name)) |val| {
+                    // Skip self-referential placeholders (used by letrec)
+                    const is_self = switch (val.*) {
+                        .symbol => |vs| std.mem.eql(u8, vs, name),
+                        .owned_symbol => |vs| std.mem.eql(u8, vs, name),
+                        else => false,
+                    };
+                    if (!is_self) return try symbolic.copyExpr(val, env.allocator);
+                }
+            }
+            return try symbolic.copyExpr(expr, env.allocator);
+        },
+        .list => |lst| {
+            if (lst.items.len == 0) return try symbolic.copyExpr(expr, env.allocator);
+
+            const head = lst.items[0];
+            const head_name: ?[]const u8 = if (head.* == .symbol) head.symbol else null;
+
+            var new_list: std.ArrayList(*Expr) = .empty;
+            errdefer {
+                for (new_list.items) |item| {
+                    item.deinit(env.allocator);
+                    env.allocator.destroy(item);
+                }
+                new_list.deinit(env.allocator);
+            }
+
+            if (head_name) |hn| {
+                // matrix rows are never evaluated; leave them untouched
+                if (std.mem.eql(u8, hn, "matrix")) {
+                    return try symbolic.copyExpr(expr, env.allocator);
+                }
+                // (lambda (p...) body): params shadow the body
+                if (std.mem.eql(u8, hn, "lambda") and lst.items.len == 3 and lst.items[1].* == .list) {
+                    try new_list.append(env.allocator, try symbolic.copyExpr(head, env.allocator));
+                    try new_list.append(env.allocator, try symbolic.copyExpr(lst.items[1], env.allocator));
+                    const shadow_base = shadowed.items.len;
+                    for (lst.items[1].list.items) |p| {
+                        if (p.* == .symbol) try shadowed.append(env.allocator, p.symbol);
+                    }
+                    const body = try captureFreeVars(lst.items[2], shadowed, env);
+                    shadowed.shrinkRetainingCapacity(shadow_base);
+                    try new_list.append(env.allocator, body);
+                    const result = try env.allocator.create(Expr);
+                    result.* = .{ .list = new_list };
+                    return result;
+                }
+                // (let/letrec ((n v)...) body): names shadow the body
+                if ((std.mem.eql(u8, hn, "let") or std.mem.eql(u8, hn, "letrec")) and
+                    lst.items.len == 3 and lst.items[1].* == .list)
+                {
+                    const is_letrec = std.mem.eql(u8, hn, "letrec");
+                    try new_list.append(env.allocator, try symbolic.copyExpr(head, env.allocator));
+                    const shadow_base = shadowed.items.len;
+                    if (is_letrec) {
+                        for (lst.items[1].list.items) |b| {
+                            if (b.* == .list and b.list.items.len == 2 and b.list.items[0].* == .symbol) {
+                                try shadowed.append(env.allocator, b.list.items[0].symbol);
+                            }
+                        }
+                    }
+                    var bindings: std.ArrayList(*Expr) = .empty;
+                    errdefer {
+                        for (bindings.items) |item| {
+                            item.deinit(env.allocator);
+                            env.allocator.destroy(item);
+                        }
+                        bindings.deinit(env.allocator);
+                    }
+                    for (lst.items[1].list.items) |b| {
+                        if (b.* == .list and b.list.items.len == 2 and b.list.items[0].* == .symbol) {
+                            var pair: std.ArrayList(*Expr) = .empty;
+                            try pair.append(env.allocator, try symbolic.copyExpr(b.list.items[0], env.allocator));
+                            try pair.append(env.allocator, try captureFreeVars(b.list.items[1], shadowed, env));
+                            const pair_expr = try env.allocator.create(Expr);
+                            pair_expr.* = .{ .list = pair };
+                            try bindings.append(env.allocator, pair_expr);
+                            if (!is_letrec) try shadowed.append(env.allocator, b.list.items[0].symbol);
+                        } else {
+                            try bindings.append(env.allocator, try symbolic.copyExpr(b, env.allocator));
+                        }
+                    }
+                    const bindings_expr = try env.allocator.create(Expr);
+                    bindings_expr.* = .{ .list = bindings };
+                    try new_list.append(env.allocator, bindings_expr);
+                    const body = try captureFreeVars(lst.items[2], shadowed, env);
+                    shadowed.shrinkRetainingCapacity(shadow_base);
+                    try new_list.append(env.allocator, body);
+                    const result = try env.allocator.create(Expr);
+                    result.* = .{ .list = new_list };
+                    return result;
+                }
+                // (sum/product var start end body): loop var shadows the body
+                if ((std.mem.eql(u8, hn, "sum") or std.mem.eql(u8, hn, "product")) and
+                    lst.items.len == 5 and lst.items[1].* == .symbol)
+                {
+                    try new_list.append(env.allocator, try symbolic.copyExpr(head, env.allocator));
+                    try new_list.append(env.allocator, try symbolic.copyExpr(lst.items[1], env.allocator));
+                    try new_list.append(env.allocator, try captureFreeVars(lst.items[2], shadowed, env));
+                    try new_list.append(env.allocator, try captureFreeVars(lst.items[3], shadowed, env));
+                    const shadow_base = shadowed.items.len;
+                    try shadowed.append(env.allocator, lst.items[1].symbol);
+                    const body = try captureFreeVars(lst.items[4], shadowed, env);
+                    shadowed.shrinkRetainingCapacity(shadow_base);
+                    try new_list.append(env.allocator, body);
+                    const result = try env.allocator.create(Expr);
+                    result.* = .{ .list = new_list };
+                    return result;
+                }
+            }
+
+            // Default: recurse into every item
+            for (lst.items) |item| {
+                try new_list.append(env.allocator, try captureFreeVars(item, shadowed, env));
+            }
+            const result = try env.allocator.create(Expr);
+            result.* = .{ .list = new_list };
+            return result;
+        },
+    }
+}
+
+/// Evaluates (dsolve equation y x). Special form: the equation is passed
+/// through unevaluated so (diff y x) is preserved structurally.
+fn evalDsolve(expr: *Expr, env: *Env) Error!*Expr {
+    if (expr.list.items.len != 4) return Error.InvalidSyntax;
+
+    const func = env.getBuiltin("dsolve") catch {
+        return try symbolic.copyExpr(expr, env.allocator);
+    };
+
+    var args: std.ArrayList(*Expr) = .empty;
+    defer {
+        for (args.items) |arg| {
+            arg.deinit(env.allocator);
+            env.allocator.destroy(arg);
+        }
+        args.deinit(env.allocator);
+    }
+    for (expr.list.items[1..]) |arg| {
+        try args.append(env.allocator, try symbolic.copyExpr(arg, env.allocator));
+    }
+    return try func(args, env);
 }
 
 /// Evaluates (define name value) or (define (name params...) body)
@@ -211,8 +427,13 @@ fn evalDefine(expr: *Expr, env: *Env) Error!*Expr {
             try params.append(env.allocator, p.symbol);
         }
 
-        // Body is the rest of the define (could be multiple expressions, take last for now)
-        const body_copy = try symbolic.copyExpr(expr.list.items[2], env.allocator);
+        // Body is the rest of the define; capture free variables by value
+        // (params and the function's own name stay symbolic for recursion)
+        var shadowed: std.ArrayList([]const u8) = .empty;
+        defer shadowed.deinit(env.allocator);
+        try shadowed.appendSlice(env.allocator, params.items);
+        try shadowed.append(env.allocator, func_name);
+        const body_copy = try captureFreeVars(expr.list.items[2], &shadowed, env);
 
         const lambda_expr = try env.allocator.create(Expr);
         lambda_expr.* = .{ .lambda = .{ .params = params, .body = body_copy } };
@@ -236,13 +457,39 @@ fn evalDefine(expr: *Expr, env: *Env) Error!*Expr {
 fn evalIf(expr: *Expr, env: *Env) Error!*Expr {
     // (if cond then else) - 4 elements, or (if cond then) - 3 elements
     if (expr.list.items.len < 3 or expr.list.items.len > 4) {
-        return Error.InvalidDefine; // Reuse error for now
+        return Error.InvalidSyntax;
     }
 
     const cond = try eval(expr.list.items[1], env);
     defer {
         cond.deinit(env.allocator);
         env.allocator.destroy(cond);
+    }
+
+    // A condition that stayed a symbolic comparison (e.g. (> x 0) with
+    // symbolic x) can't be decided: return the whole if-expression inert
+    if (cond.* == .list and cond.list.items.len > 0 and cond.list.items[0].* == .symbol) {
+        const op = cond.list.items[0].symbol;
+        if (std.mem.eql(u8, op, "<") or std.mem.eql(u8, op, ">") or std.mem.eql(u8, op, "=")) {
+            var result_list: std.ArrayList(*Expr) = .empty;
+            errdefer {
+                for (result_list.items) |item| {
+                    item.deinit(env.allocator);
+                    env.allocator.destroy(item);
+                }
+                result_list.deinit(env.allocator);
+            }
+            const if_sym = try env.allocator.create(Expr);
+            if_sym.* = .{ .symbol = "if" };
+            try result_list.append(env.allocator, if_sym);
+            try result_list.append(env.allocator, try symbolic.copyExpr(cond, env.allocator));
+            for (expr.list.items[2..]) |branch| {
+                try result_list.append(env.allocator, try symbolic.copyExpr(branch, env.allocator));
+            }
+            const result = try env.allocator.create(Expr);
+            result.* = .{ .list = result_list };
+            return result;
+        }
     }
 
     // Truthy: anything that's not 0 or empty list
@@ -268,12 +515,12 @@ fn evalIf(expr: *Expr, env: *Env) Error!*Expr {
 /// Evaluates (let ((var val) ...) body)
 fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
     // (let ((x 1) (y 2)) body) - 3 elements
-    if (expr.list.items.len != 3) return Error.InvalidDefine;
+    if (expr.list.items.len != 3) return Error.InvalidSyntax;
 
     const bindings = expr.list.items[1];
     const body = expr.list.items[2];
 
-    if (bindings.* != .list) return Error.InvalidDefine;
+    if (bindings.* != .list) return Error.InvalidSyntax;
 
     // Save old values and set new ones
     var old_values: std.ArrayList(SavedBinding) = .empty;
@@ -281,8 +528,8 @@ fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
 
     // Evaluate and bind all variables
     for (bindings.list.items) |binding| {
-        if (binding.* != .list or binding.list.items.len != 2) return Error.InvalidDefine;
-        if (binding.list.items[0].* != .symbol) return Error.InvalidDefine;
+        if (binding.* != .list or binding.list.items.len != 2) return Error.InvalidSyntax;
+        if (binding.list.items[0].* != .symbol) return Error.InvalidSyntax;
 
         const var_name = binding.list.items[0].symbol;
         const var_val = try eval(binding.list.items[1], env);
@@ -311,7 +558,7 @@ fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
                     current.deinit(env.allocator);
                     env.allocator.destroy(current);
                 } else |_| {}
-                _ = env.variables.remove(item.name);
+                _ = env.remove(item.name);
             }
         }
         return err;
@@ -332,7 +579,7 @@ fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
                 current.deinit(env.allocator);
                 env.allocator.destroy(current);
             } else |_| {}
-            _ = env.variables.remove(item.name);
+            _ = env.remove(item.name);
         }
     }
 
@@ -342,12 +589,12 @@ fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
 /// Evaluates (letrec ((var val) ...) body) - allows recursive bindings
 fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
     // (letrec ((fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))) (fact 5))
-    if (expr.list.items.len != 3) return Error.InvalidDefine;
+    if (expr.list.items.len != 3) return Error.InvalidSyntax;
 
     const bindings = expr.list.items[1];
     const body = expr.list.items[2];
 
-    if (bindings.* != .list) return Error.InvalidDefine;
+    if (bindings.* != .list) return Error.InvalidSyntax;
 
     // Save old values
     var old_values: std.ArrayList(SavedBinding) = .empty;
@@ -355,8 +602,8 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
 
     // First pass: bind all names to placeholders (allows mutual recursion)
     for (bindings.list.items) |binding| {
-        if (binding.* != .list or binding.list.items.len != 2) return Error.InvalidDefine;
-        if (binding.list.items[0].* != .symbol) return Error.InvalidDefine;
+        if (binding.* != .list or binding.list.items.len != 2) return Error.InvalidSyntax;
+        if (binding.list.items[0].* != .symbol) return Error.InvalidSyntax;
 
         const var_name = binding.list.items[0].symbol;
 
@@ -364,9 +611,10 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
         const old_val = env.get(var_name) catch null;
         try old_values.append(env.allocator, .{ .name = var_name, .value = old_val });
 
-        // Create a placeholder (we'll replace it after all bindings are visible)
+        // Create a self-referential placeholder (the symbol itself) so that
+        // closure capture leaves recursive references symbolic
         const placeholder = try env.allocator.create(Expr);
-        placeholder.* = .{ .number = 0 };
+        placeholder.* = .{ .symbol = var_name };
         try env.put(var_name, placeholder);
     }
 
@@ -401,7 +649,7 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
                     current.deinit(env.allocator);
                     env.allocator.destroy(current);
                 } else |_| {}
-                _ = env.variables.remove(item.name);
+                _ = env.remove(item.name);
             }
         }
         return err;
@@ -422,7 +670,7 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
                 current.deinit(env.allocator);
                 env.allocator.destroy(current);
             } else |_| {}
-            _ = env.variables.remove(item.name);
+            _ = env.remove(item.name);
         }
     }
 
@@ -508,13 +756,13 @@ fn evalMatrix(expr: *Expr, env: *Env) Error!*Expr {
     // Validate and copy rows (don't evaluate them)
     var cols: ?usize = null;
     for (expr.list.items[1..]) |row| {
-        if (row.* != .list) return Error.InvalidDefine; // Rows must be lists
+        if (row.* != .list) return Error.InvalidSyntax; // Rows must be lists
 
         // Check rectangular
         if (cols == null) {
             cols = row.list.items.len;
         } else if (row.list.items.len != cols.?) {
-            return Error.InvalidDefine; // Non-rectangular
+            return Error.InvalidSyntax; // Non-rectangular
         }
 
         // Copy row without evaluating
@@ -530,14 +778,14 @@ fn evalMatrix(expr: *Expr, env: *Env) Error!*Expr {
 /// Evaluates (sum var start end body) - summation notation
 fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
     // (sum i 1 5 (* i i)) computes sum of i^2 from i=1 to i=5
-    if (expr.list.items.len != 5) return Error.InvalidDefine;
+    if (expr.list.items.len != 5) return Error.InvalidSyntax;
 
     const var_expr = expr.list.items[1];
     const start_expr = expr.list.items[2];
     const end_expr = expr.list.items[3];
     const body_expr = expr.list.items[4];
 
-    if (var_expr.* != .symbol) return Error.InvalidDefine;
+    if (var_expr.* != .symbol) return Error.InvalidSyntax;
     const var_name = var_expr.symbol;
 
     // Evaluate start and end
@@ -554,8 +802,9 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
 
     // If both bounds are numeric integers, compute the sum
     if (start_val.* == .number and end_val.* == .number) {
-        const start_int: i64 = @intFromFloat(start_val.number);
-        const end_int: i64 = @intFromFloat(end_val.number);
+        const start_int = boundToInt(start_val.number) orelse return Error.InvalidArgument;
+        const end_int = boundToInt(end_val.number) orelse return Error.InvalidArgument;
+        if (end_int - start_int >= MAX_LOOP_ITERATIONS) return Error.RecursionLimit;
 
         if (start_int > end_int) {
             // Empty sum
@@ -567,11 +816,15 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
         // Save old binding
         const old_val = env.get(var_name) catch null;
 
-        // Compute sum
+        // Compute sum: numeric terms fold into an accumulator so large
+        // ranges don't build a deep expression tree (which is slow and can
+        // exhaust the stack on teardown); only symbolic terms are chained.
+        var numeric_acc: f64 = 0;
+        var has_numeric = false;
         var sum_result: ?*Expr = null;
-        errdefer if (sum_result) |s| {
-            s.deinit(env.allocator);
-            env.allocator.destroy(s);
+        errdefer if (sum_result) |acc| {
+            acc.deinit(env.allocator);
+            env.allocator.destroy(acc);
         };
 
         var i: i64 = start_int;
@@ -590,12 +843,27 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
             // Evaluate body
             const term = try eval(body_expr, env);
 
-            if (sum_result) |s| {
-                // Add to running sum
-                const new_sum = try symbolic.makeBinOp(env.allocator, "+", s, term);
-                sum_result = new_sum;
+            if (term.* == .number) {
+                numeric_acc += term.number;
+                has_numeric = true;
+                term.deinit(env.allocator);
+                env.allocator.destroy(term);
+            } else if (sum_result) |acc| {
+                const new_acc = try symbolic.makeBinOp(env.allocator, "+", acc, term);
+                sum_result = new_acc;
             } else {
                 sum_result = term;
+            }
+        }
+
+        // Fold the numeric accumulator into the result
+        if (has_numeric) {
+            const acc_expr = try env.allocator.create(Expr);
+            acc_expr.* = .{ .number = numeric_acc };
+            if (sum_result) |acc| {
+                sum_result = try symbolic.makeBinOp(env.allocator, "+", acc, acc_expr);
+            } else {
+                sum_result = acc_expr;
             }
         }
 
@@ -608,7 +876,7 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
         if (old_val) |old| {
             try env.put(var_name, old);
         } else {
-            _ = env.variables.remove(var_name);
+            _ = env.remove(var_name);
         }
 
         // Simplify result
@@ -650,14 +918,14 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
 /// Evaluates (product var start end body) - product notation
 fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
     // (product i 1 5 i) computes 1*2*3*4*5 = 120 (factorial)
-    if (expr.list.items.len != 5) return Error.InvalidDefine;
+    if (expr.list.items.len != 5) return Error.InvalidSyntax;
 
     const var_expr = expr.list.items[1];
     const start_expr = expr.list.items[2];
     const end_expr = expr.list.items[3];
     const body_expr = expr.list.items[4];
 
-    if (var_expr.* != .symbol) return Error.InvalidDefine;
+    if (var_expr.* != .symbol) return Error.InvalidSyntax;
     const var_name = var_expr.symbol;
 
     // Evaluate start and end
@@ -674,8 +942,9 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
 
     // If both bounds are numeric integers, compute the product
     if (start_val.* == .number and end_val.* == .number) {
-        const start_int: i64 = @intFromFloat(start_val.number);
-        const end_int: i64 = @intFromFloat(end_val.number);
+        const start_int = boundToInt(start_val.number) orelse return Error.InvalidArgument;
+        const end_int = boundToInt(end_val.number) orelse return Error.InvalidArgument;
+        if (end_int - start_int >= MAX_LOOP_ITERATIONS) return Error.RecursionLimit;
 
         if (start_int > end_int) {
             // Empty product
@@ -687,11 +956,15 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
         // Save old binding
         const old_val = env.get(var_name) catch null;
 
-        // Compute product
+        // Compute product: numeric terms fold into an accumulator so large
+        // ranges don't build a deep expression tree (which is slow and can
+        // exhaust the stack on teardown); only symbolic terms are chained.
+        var numeric_acc: f64 = 1;
+        var has_numeric = false;
         var product_result: ?*Expr = null;
-        errdefer if (product_result) |p| {
-            p.deinit(env.allocator);
-            env.allocator.destroy(p);
+        errdefer if (product_result) |acc| {
+            acc.deinit(env.allocator);
+            env.allocator.destroy(acc);
         };
 
         var i: i64 = start_int;
@@ -710,12 +983,27 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
             // Evaluate body
             const term = try eval(body_expr, env);
 
-            if (product_result) |p| {
-                // Multiply with running product
-                const new_product = try symbolic.makeBinOp(env.allocator, "*", p, term);
-                product_result = new_product;
+            if (term.* == .number) {
+                numeric_acc *= term.number;
+                has_numeric = true;
+                term.deinit(env.allocator);
+                env.allocator.destroy(term);
+            } else if (product_result) |acc| {
+                const new_acc = try symbolic.makeBinOp(env.allocator, "*", acc, term);
+                product_result = new_acc;
             } else {
                 product_result = term;
+            }
+        }
+
+        // Fold the numeric accumulator into the result
+        if (has_numeric) {
+            const acc_expr = try env.allocator.create(Expr);
+            acc_expr.* = .{ .number = numeric_acc };
+            if (product_result) |acc| {
+                product_result = try symbolic.makeBinOp(env.allocator, "*", acc, acc_expr);
+            } else {
+                product_result = acc_expr;
             }
         }
 
@@ -728,7 +1016,7 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
         if (old_val) |old| {
             try env.put(var_name, old);
         } else {
-            _ = env.variables.remove(var_name);
+            _ = env.remove(var_name);
         }
 
         // Simplify result
@@ -771,12 +1059,12 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
 /// - (= left right) which gets converted to (- left right) = 0
 /// - Any expression assumed equal to 0
 fn evalSolve(expr: *Expr, env: *Env) Error!*Expr {
-    if (expr.list.items.len != 3) return Error.InvalidDefine;
+    if (expr.list.items.len != 3) return Error.InvalidSyntax;
 
     const eq_expr = expr.list.items[1];
     const var_expr = expr.list.items[2];
 
-    if (var_expr.* != .symbol) return Error.InvalidDefine;
+    if (var_expr.* != .symbol) return Error.InvalidSyntax;
     const var_name = var_expr.symbol;
 
     // Check if equation is in (= left right) form
@@ -818,6 +1106,14 @@ fn evalSolve(expr: *Expr, env: *Env) Error!*Expr {
     return symbolic.solve(equation_to_solve, var_name, env.allocator) catch return Error.OutOfMemory;
 }
 
+/// Converts a numeric loop bound to an integer, rejecting non-integers
+/// and values outside the exactly-representable f64 integer range.
+fn boundToInt(n: f64) ?i64 {
+    if (n != @floor(n)) return null;
+    if (n > 9.0e15 or n < -9.0e15) return null;
+    return @intFromFloat(n);
+}
+
 fn restoreBindings(old_values: *std.ArrayList(SavedBinding), env: *Env) void {
     for (old_values.items) |item| {
         if (item.value) |old| {
@@ -833,7 +1129,7 @@ fn restoreBindings(old_values: *std.ArrayList(SavedBinding), env: *Env) void {
                 current.deinit(env.allocator);
                 env.allocator.destroy(current);
             } else |_| {}
-            _ = env.variables.remove(item.name);
+            _ = env.remove(item.name);
         }
     }
 }

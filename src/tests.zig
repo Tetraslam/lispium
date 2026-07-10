@@ -42,6 +42,7 @@ comptime {
     _ = @import("tests/memoization.zig");
     _ = @import("tests/plotting.zig");
     _ = @import("tests/steps.zig");
+    _ = @import("tests/regressions.zig");
 }
 
 // Re-export helpers for any external use

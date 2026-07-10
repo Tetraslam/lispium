@@ -41,9 +41,7 @@ ad - bc
 - **Number Theory** - primes, factorization, Chinese Remainder Theorem
 - **And more** - quaternions, finite fields, Laplace transforms, plotting
 
-[Full documentation below](#features) · [Cookbook](cookbook/)
-
----
+[Cookbook](cookbook/) · [Full function reference](CLAUDE.md)
 
 ## Features
 
@@ -55,12 +53,12 @@ ad - bc
 - [x] Partial fractions decomposition
 - [x] Complex number arithmetic
 - [x] Expression simplification & expansion
-- [x] Lambda functions & user-defined procedures
+- [x] Lambda functions & user-defined procedures (with closures)
 - [x] Recursive functions (letrec)
 - [x] Symbolic limits with L'Hôpital's rule
 - [x] Pattern-matching rewrite rules
 - [x] Symbolic matrix operations (det, inv, transpose, LU decomposition)
-- [x] Vector operations (dot, cross, norm)
+- [x] Vector operations (dot, cross, norm, elementwise arithmetic)
 - [x] Vector calculus (gradient, divergence, curl, laplacian)
 - [x] Summation & product notation
 - [x] Combinatorics (factorial, binomial, permutations, combinations)
@@ -90,354 +88,90 @@ ad - bc
 zig build run -- repl
 ```
 
-## Operations
+## Tour
 
-### Arithmetic
-
-```lisp
-(+ 1 2 3)           ; => 6
-(- 10 3 2)          ; => 5
-(* 2 3 4)           ; => 24
-(/ 10 2)            ; => 5
-(^ 2 10)            ; => 1024
-```
-
-### Functions
+Everything is a prefix S-expression: `(+ 1 2 3)` => `6`, `(^ 2 10)` => `1024`.
 
 ```lisp
-(sin x)  (cos x)  (tan x)
-(asin x) (acos x) (atan x) (atan2 y x)
-(sinh x) (cosh x) (tanh x)
-(asinh x) (acosh x) (atanh x)
-(exp x)  (ln x)   (log x)
-(sqrt x)
-```
-
-### Special Functions
-
-```lisp
-(gamma 5)                 ; => 24 (Gamma function)
-(beta 2 3)                ; => 0.0833... (Beta function)
-(bessel 0 1)              ; => 0.7651... (Bessel J_n)
-(erf 1)                   ; => 0.8427... (Error function)
-```
-
-### Calculus
-
-```lisp
+; Calculus
 (diff (^ x 3) x)              ; => (* 3 (^ x 2))
-(integrate (* 2 x) x)         ; => (^ x 2)
-(integrate x x 0 2)           ; => 2 (definite integral)
-(taylor (exp x) x 0 4)        ; => (+ 1 x (* 0.5 (^ x 2)) ...)
-```
+(integrate (* x (sin x)) x)   ; => (- (sin x) (* x (cos x)))
+(integrate (sin x) x 0 pi)    ; => 2 (definite integral)
+(taylor (exp x) x 0 4)        ; => 1 + x + x²/2 + x³/6 + x⁴/24
+(limit (/ (sin x) x) x 0)     ; => 1 (L'Hôpital)
+(limit (^ (+ 1 (/ 1 x)) x) x inf)  ; => e
 
-### Limits
-
-```lisp
-(limit (^ x 2) x 2)           ; => 4
-(limit (/ (sin x) x) x 0)     ; => 1   (L'Hôpital)
-(limit (/ (tan x) x) x 0)     ; => 1
-```
-
-### Algebra
-
-```lisp
-(simplify (+ x x x))          ; => (* 3 x)
-(simplify (+ (* 2 x) (* 3 x))) ; => (* 5 x)
+; Algebra
+(simplify (+ (^ (sin x) 2) (^ (cos x) 2)))  ; => 1
 (expand (* (+ x 1) (+ x 1)))  ; => (+ (^ x 2) (* 2 x) 1)
 (solve (- (^ x 2) 4) x)       ; => (solutions 2 -2)
-(solve (= x 5) x)             ; => 5 (equation syntax)
+(factor (+ (^ x 2) (* 3 x) 2) x)  ; => (* (+ x 1) (+ x 2))
+(partial-fractions (/ 1 (- (^ x 2) 1)) x)
 (substitute (+ x y) x 5)      ; => (+ 5 y)
 (evalf pi)                    ; => 3.141592653589793
-(N (sin pi))                  ; => 0
-```
 
-### Factoring
-
-```lisp
-(factor (- (^ x 2) 4) x)      ; => (* (- x 2) (+ x 2))
-(factor (+ (^ x 2) (* 2 x) 1) x) ; => (^ (+ x 1) 2)
-(factor (+ (^ x 2) (* 3 x) 2) x) ; => (* (- x -1) (- x -2))
-```
-
-### Partial Fractions
-
-```lisp
-(partial-fractions (/ 1 (- (^ x 2) 1)) x)
-; => (+ (/ 0.5 (- x 1)) (/ -0.5 (- x -1)))
-
-(partial-fractions (/ 1 (+ (^ x 2) (* 3 x) 2)) x)
-; => (+ (/ 1 (- x -1)) (/ -1 (- x -2)))
-```
-
-### Lambda & Define
-
-```lisp
-((lambda (x) (* x x)) 5)      ; => 25
+; Functions and closures
 (define (square x) (* x x))
 (square 7)                    ; => 49
-(let ((a 3) (b 4)) (+ a b))   ; => 7
-(if 1 42 99)                  ; => 42
-(= 3 3)                       ; => 1 (true)
-(< 2 5)                       ; => 1 (true)
-```
-
-### Recursive Functions
-
-```lisp
-; factorial using letrec
-(letrec ((fact (lambda (n)
-  (if (= n 0) 1 (* n (fact (- n 1)))))))
+(define (make-adder n) (lambda (x) (+ x n)))
+((make-adder 5) 10)           ; => 15
+(letrec ((fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))))
   (fact 5))                   ; => 120
+(let ((a 3) (b 4)) (+ a b))   ; => 7
 
-; fibonacci
-(letrec ((fib (lambda (n)
-  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))))
-  (fib 10))                   ; => 55
-```
-
-### Rewrite Rules
-
-```lisp
-(rule (double ?x) (* 2 ?x))   ; define pattern rule
+; Rewrite rules
+(rule (double ?x) (* 2 ?x))
 (rewrite (double 5))          ; => (* 2 5)
-(rule (sq ?x) (* ?x ?x))
-(rewrite (+ (sq 3) (sq 4)))   ; => (+ (* 3 3) (* 4 4))
-```
 
-### Complex Numbers
-
-```lisp
-(complex 3 4)                 ; => 3+4i
+; Complex numbers
+(sqrt -4)                     ; => 2i
+(* (complex 0 1) (complex 0 1))  ; => -1
 (magnitude (complex 3 4))     ; => 5
-(conj (complex 3 4))          ; => 3-4i
-(solve (+ (^ x 2) 1) x)       ; => (solutions i -i)
-```
 
-### Matrices
-
-```lisp
-(matrix (1 2) (3 4))          ; 2x2 matrix
+; Linear algebra
 (det (matrix (a b) (c d)))    ; => (- (* a d) (* b c))
-(transpose (matrix (1 2) (3 4)))  ; => ((1 3) (2 4))
-(trace (matrix (1 2) (3 4)))  ; => 5
-(matmul A B)                  ; matrix multiplication
 (inv (matrix (4 0) (0 4)))    ; => ((0.25 0) (0 0.25))
-```
+(matmul A B)  (eigenvalues M)  (lu M)  (linsolve A b)
+(+ (vector 1 2) (vector 3 4)) ; => (vector 4 6)
+(cross (vector 1 0 0) (vector 0 1 0))  ; => (vector 0 0 1)
 
-### Series & Products
-
-```lisp
-(sum i 1 5 i)                 ; => 15 (1+2+3+4+5)
-(sum i 1 5 (* i i))           ; => 55 (sum of squares)
-(product i 1 5 i)             ; => 120 (5!)
-(sum i 1 n i)                 ; symbolic: stays as (sum i 1 n i)
-```
-
-### Vectors
-
-```lisp
-(vector 1 2 3)                ; 3D vector
-(dot (vector 1 2 3) (vector 4 5 6))  ; => 32
-(cross (vector 1 0 0) (vector 0 1 0)) ; => (vector 0 0 1)
-(norm (vector 3 4))           ; => 5
-```
-
-### Vector Calculus
-
-```lisp
-(gradient (+ (^ x 2) (^ y 2)) (vector x y))   ; => (vector (* 2 x) (* 2 y))
-(divergence (vector x y) (vector x y))         ; => 2
-(curl (vector y (* -1 x) 0) (vector x y z))   ; => (vector 0 0 -2)
-(laplacian (^ x 2) (vector x))                 ; => 2
-```
-
-### Combinatorics
-
-```lisp
-(factorial 5)                 ; => 120
-(! 5)                         ; => 120 (alias)
-(binomial 5 2)                ; => 10
-(choose 5 2)                  ; => 10 (alias)
-(permutations 5 3)            ; => 60
-(combinations 5 3)            ; => 10
-```
-
-### Number Theory
-
-```lisp
-(prime? 17)                   ; => 1 (true)
-(prime? 15)                   ; => 0 (false)
+; Series, number theory, statistics
+(sum i 1 5 (* i i))           ; => 55
+(product i 1 5 i)             ; => 120
 (factorize 60)                ; => (factors (2 2) (3 1) (5 1))
-(extgcd 35 15)                ; => (extgcd 5 1 -2) (gcd and Bezout coefficients)
-(totient 12)                  ; => 4 (Euler's totient)
-(crt (2 3) (3 5))             ; => 8 (Chinese Remainder Theorem)
-```
-
-### Statistics
-
-```lisp
+(crt (vector 2 3) (vector 3 5))  ; => 8
 (mean 1 2 3 4 5)              ; => 3
-(variance 1 2 3 4 5)          ; => 2
-(stddev 1 2 3 4 5)            ; => 1.414...
-(median 1 2 3 4 5)            ; => 3
-(min 3 1 4 1 5)               ; => 1
-(max 3 1 4 1 5)               ; => 5
-```
 
-### Linear Algebra (Advanced)
+; Differential equations & transforms
+(dsolve (= (diff y x) y) y x) ; => (= y (* C (exp x)))
+(laplace (exp (* -1 t)) t s)  ; => (/ 1 (+ s 1))
 
-```lisp
-(lu (matrix (4 3) (6 3)))     ; => (lu L U) - LU decomposition
-(charpoly (matrix (1 2) (3 4)) lambda) ; characteristic polynomial
-(eigenvalues (matrix (1 2) (2 1)))     ; => (eigenvalues 3 -1)
-```
+; Quaternions & finite fields
+(quat* (quat 0 1 0 0) (quat 0 0 1 0))  ; => (quat 0 0 0 1)
+(gf+ (gf 3 7) (gf 5 7))       ; => (gf 1 7)
 
-### Polynomial Tools
-
-```lisp
-(coeffs 1 -3 2)               ; polynomial x² - 3x + 2 as coefficients
-(polydiv (coeffs 1 -3 2) (coeffs 1 -2) x)  ; polynomial division
-(polygcd (coeffs 1 -3 2) (coeffs 1 -4 3))  ; polynomial GCD
-(roots (+ (- (^ x 2) (* 5 x)) 6) x)        ; => (roots 3 2)
-(discriminant (+ (^ x 2) 1) x)             ; => -4
-```
-
-### Quaternions
-
-```lisp
-(quat 1 2 3 4)                ; quaternion 1 + 2i + 3j + 4k
-(quat+ q1 q2)                 ; quaternion addition
-(quat* q1 q2)                 ; quaternion multiplication (Hamilton product)
-(quat-conj (quat 1 2 3 4))    ; => (quat 1 -2 -3 -4)
-(quat-norm (quat 1 2 3 4))    ; => magnitude
-(quat-inv q)                  ; multiplicative inverse
-```
-
-### Finite Fields GF(p)
-
-```lisp
-(gf 3 7)                      ; element 3 in GF(7)
-(gf+ (gf 3 7) (gf 5 7))       ; => (gf 1 7) (3+5=8≡1 mod 7)
-(gf* (gf 3 7) (gf 4 7))       ; => (gf 5 7) (3*4=12≡5 mod 7)
-(gf-inv (gf 3 7))             ; => (gf 5 7) (multiplicative inverse)
-(gf^ (gf 2 7) 3)              ; => (gf 1 7) (2³=8≡1 mod 7)
-```
-
-### LaTeX Export
-
-```lisp
-(latex (+ x 1))               ; => "x + 1"
+; Export & tooling
 (latex (/ 1 x))               ; => "\frac{1}{x}"
-(latex (^ x 2))               ; => "x^{2}"
-(latex (sin x))               ; => "\sin{x}"
-(latex (matrix (1 2) (3 4)))  ; => "\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}"
+(plot-ascii (* x x) -2 2)     ; ASCII plot
+(diff-steps (^ x 3) x)        ; step-by-step solution
 ```
 
-## Trig/Log Identities
+The [cookbook](cookbook/) has runnable examples for every area
+(`lispium run cookbook/calculus.lspm`), and [CLAUDE.md](CLAUDE.md) documents
+every builtin with signatures.
 
-Simplify automatically applies:
+## REPL
 
-- `sin(0) = 0`, `cos(0) = 1`, `tan(0) = 0`
-- `exp(0) = 1`, `ln(1) = 0`, `ln(e) = 1`
-- `exp(ln(x)) = x`, `ln(exp(x)) = x`
-- `ln(x^n) = n*ln(x)`
+- Multi-line input continues until parens balance; an empty line cancels
+- `help`, `?function` (inline docs), `complete <partial>` (tab-complete names)
+- `history`, `!!` (repeat last), `!n` (recall entry n)
+- Pretty printing: π, ⟨1, 2, 3⟩, x², √x, 3 + 4i, {2, -2}
 
 ## Tests
 
 ```bash
-zig build test
+zig build test               # run the suite
+zig build test --summary all # verbose, shows test names
 ```
 
-For verbose output showing all test names:
-
-```bash
-zig build test --summary all
-```
-
-460 tests, 0 memory leaks.
-
-## New Features
-
-### Differential Equations
-
-```lisp
-(dsolve (- (diff y x) y) y x)  ; dy/dx = y => y = C*e^x
-```
-
-### Fourier Series & Laplace Transforms
-
-```lisp
-(fourier-series (^ x 2) x 3)   ; Fourier series approximation
-(laplace (exp (* -1 t)) t s)   ; => (/ 1 (+ s 1))
-(inverse-laplace (/ 1 s) s t)  ; => 1
-```
-
-### Tensor Operations
-
-```lisp
-(tensor (vector 1 2 3))           ; 1D tensor
-(tensor-rank (vector 1 2 3))      ; => 1
-(tensor-contract T 0 1)           ; Contract indices
-(tensor-product T1 T2)            ; Outer product
-```
-
-### Polynomial Interpolation
-
-```lisp
-(lagrange (vector (vector 0 1) (vector 1 2) (vector 2 5)) x)
-(newton-interp (vector (vector 0 1) (vector 1 2)) x)
-```
-
-### Numerical Root Finding
-
-```lisp
-(newton-raphson (- (* x x) 2) x 1 0.001)  ; sqrt(2) ≈ 1.414
-(bisection (- (* x x) 2) x 1 2 0.001)     ; sqrt(2)
-```
-
-### Continued Fractions
-
-```lisp
-(to-cf 3.14159)                   ; => (cf 3 7 15 1 ...)
-(from-cf (cf 3 7 15 1))           ; => 3.14159...
-(cf-rational 22 7)                ; => (cf 3 7)
-(cf-convergent (cf 3 7 15) 1)     ; => (rational 22 7)
-```
-
-### List Operations
-
-```lisp
-(car (list 1 2 3))                ; => 1
-(cdr (list 1 2 3))                ; => (list 2 3)
-(cons 1 (list 2 3))               ; => (list 1 2 3)
-(map (lambda (x) (* x 2)) (list 1 2 3))  ; => (list 2 4 6)
-(filter (lambda (x) (> x 1)) (list 1 2 3))  ; => (list 2 3)
-(reduce + 0 (list 1 2 3))         ; => 6
-(range 5)                         ; => (list 0 1 2 3 4)
-```
-
-### Memoization
-
-```lisp
-(memoize (fib 30))                ; Cache expensive computation
-(memo-clear)                      ; Clear cache
-(memo-stats)                      ; => number of cached items
-```
-
-### Plotting
-
-```lisp
-(plot-ascii (* x x) -2 2)         ; ASCII plot of x²
-(plot-svg (sin x) 0 6.28)         ; SVG plot of sin(x)
-(plot-points (list (vector 0 0) (vector 1 1) (vector 2 4)))
-```
-
-### Step-by-Step Solutions
-
-```lisp
-(diff-steps (^ x 3) x)            ; Shows differentiation steps
-(integrate-steps (sin x) x)       ; Shows integration steps
-(simplify-steps (+ x x x))        ; Shows simplification steps
-(solve-steps (- (* x x) 4) x)     ; Shows equation solving steps
-```
+504 tests, 0 memory leaks.

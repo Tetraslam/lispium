@@ -43,10 +43,13 @@ pub const Env = struct {
     }
 
     pub fn deinit(self: *Env) void {
+        // The memoization cache allocates from this environment's allocator
+        @import("builtins.zig").deinitMemoCache();
         var it = self.variables.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.deinit(self.allocator);
             self.allocator.destroy(entry.value_ptr.*);
+            self.allocator.free(entry.key_ptr.*);
         }
         self.variables.deinit();
         self.builtins.deinit();
@@ -116,8 +119,27 @@ pub const Env = struct {
         return self.variables.get(key) orelse return Error.KeyNotFound;
     }
 
+    /// Stores a variable binding. The key is duplicated so the environment
+    /// owns its own copy (callers may pass slices into transient buffers).
     pub fn put(self: *Env, key: []const u8, val: *Expr) !void {
-        try self.variables.put(key, val);
+        if (self.variables.getEntry(key)) |entry| {
+            // Key already owned by the map; just swap the value.
+            entry.value_ptr.* = val;
+        } else {
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.variables.put(owned_key, val);
+        }
+    }
+
+    /// Removes a variable binding, freeing the owned key.
+    /// Does NOT free the value (callers manage value lifetime).
+    pub fn remove(self: *Env, key: []const u8) bool {
+        if (self.variables.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+            return true;
+        }
+        return false;
     }
 
     pub fn getBuiltin(self: *Env, key: []const u8) !BuiltinFn {

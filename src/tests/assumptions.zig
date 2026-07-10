@@ -26,7 +26,7 @@ test "assumptions: assume positive" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("x", str);
+    try testing.expectEqualStrings("(assumed x positive)", str);
 }
 
 test "assumptions: is positive" {

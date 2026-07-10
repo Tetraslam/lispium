@@ -173,7 +173,7 @@ test "factor: x^2 + 3x + 2 (general quadratic)" {
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
     // Roots are -1 and -2, so we get (x - (-1))(x - (-2))
-    try testing.expectEqualStrings("(* (- x -1) (- x -2))", str);
+    try testing.expectEqualStrings("(* (+ x 1) (+ x 2))", str);
 }
 
 test "factor: x^2 - 5x + 6 (general quadratic)" {

@@ -6,6 +6,7 @@ const Expr = @import("parser.zig").Expr;
 const eval = @import("evaluator.zig").eval;
 const Env = @import("environment.zig").Env;
 const builtins = @import("builtins.zig");
+const registry = @import("registry.zig");
 
 const version = build_options.version;
 
@@ -21,7 +22,7 @@ const help_text =
     \\Algebra:        (simplify expr)        - simplify
     \\                (expand expr)          - expand products
     \\                (solve expr var)       - solve equation
-    \\                (factor expr)          - factor polynomial
+    \\                (factor expr var)      - factor polynomial
     \\                (collect expr var)     - collect like terms
     \\                (substitute expr v e)  - substitute
     \\Linear Alg:     (matrix (a b) (c d))   - create matrix
@@ -54,6 +55,8 @@ const help_text =
     \\  - Type 'complete <partial>' for function name completions
     \\  - Type ?function for help on a specific function (e.g., ?diff)
     \\  - Multi-line input: expressions continue until parens are balanced
+    \\  - An empty line cancels a pending multi-line expression
+    \\  - 'history' lists past inputs; '!!' repeats the last, '!n' recalls entry n
     \\
     \\Type 'help' for this message, 'quit' or Ctrl+D to exit.
 ;
@@ -62,6 +65,7 @@ const help_text =
 const builtin_names = [_][]const u8{
     // Arithmetic
     "+", "-", "*", "/", "^", "pow",
+    "abs", "floor", "ceil", "round", "sign",
     // Algebra
     "simplify", "diff", "integrate", "expand", "substitute", "taylor", "solve", "factor",
     "partial-fractions", "collect", "limit",
@@ -171,8 +175,13 @@ fn getFunctionHelp(name: []const u8) ?[]const u8 {
     // Transcendental
     if (std.mem.eql(u8, name, "exp")) return "(exp x)  Exponential function e^x";
     if (std.mem.eql(u8, name, "ln")) return "(ln x)  Natural logarithm (base e)";
-    if (std.mem.eql(u8, name, "log")) return "(log x [base])  Logarithm, default base e\n  Example: (log 100 10) => 2";
-    if (std.mem.eql(u8, name, "sqrt")) return "(sqrt x)  Square root, equivalent to (^ x 0.5)";
+    if (std.mem.eql(u8, name, "log")) return "(log x [base])  Logarithm of x in the given base (default 10)\n  Example: (log 100 10) => 2";
+    if (std.mem.eql(u8, name, "sqrt")) return "(sqrt x)  Square root, equivalent to (^ x 0.5); (sqrt -4) => 2i";
+    if (std.mem.eql(u8, name, "abs")) return "(abs x)  Absolute value; magnitude for complex numbers";
+    if (std.mem.eql(u8, name, "floor")) return "(floor x)  Round down to the nearest integer";
+    if (std.mem.eql(u8, name, "ceil")) return "(ceil x)  Round up to the nearest integer";
+    if (std.mem.eql(u8, name, "round")) return "(round x)  Round to the nearest integer";
+    if (std.mem.eql(u8, name, "sign")) return "(sign x)  -1, 0, or 1 depending on the sign of x";
 
     // Complex
     if (std.mem.eql(u8, name, "complex")) return "(complex re im)  Create complex number re + im*i\n  Example: (complex 3 4) => 3 + 4i";
@@ -242,9 +251,16 @@ fn getFunctionHelp(name: []const u8) ?[]const u8 {
 fn countParens(input: []const u8) i32 {
     var depth: i32 = 0;
     var in_string = false;
+    var in_comment = false;
     for (input) |c| {
+        if (c == '\n') in_comment = false;
+        if (in_comment) continue;
         if (c == '"') in_string = !in_string;
         if (!in_string) {
+            if (c == ';') {
+                in_comment = true;
+                continue;
+            }
             if (c == '(') depth += 1;
             if (c == ')') depth -= 1;
         }
@@ -286,151 +302,20 @@ fn getCurrentWord(input: []const u8) []const u8 {
 }
 
 pub fn run(allocator: std.mem.Allocator) !void {
+    // Every evaluated input line is kept alive for the whole session:
+    // parsed symbols are slices into these buffers, and anything stored in
+    // the environment (defines, rules, lambdas) must remain valid.
+    var session_inputs: std.ArrayList([]u8) = .empty;
+    defer {
+        for (session_inputs.items) |input| allocator.free(input);
+        session_inputs.deinit(allocator);
+    }
+
     var env = Env.init(allocator);
     defer env.deinit();
 
-    // Initialize builtins
-    try env.putBuiltin("+", builtins.builtin_add);
-    try env.putBuiltin("-", builtins.builtin_subtract);
-    try env.putBuiltin("*", builtins.builtin_multiply);
-    try env.putBuiltin("/", builtins.builtin_divide);
-    try env.putBuiltin("^", builtins.builtin_power);
-    try env.putBuiltin("pow", builtins.builtin_power);
-    try env.putBuiltin("simplify", builtins.builtin_simplify);
-    try env.putBuiltin("evalf", builtins.builtin_evalf);
-    try env.putBuiltin("N", builtins.builtin_evalf);
-    try env.putBuiltin("diff", builtins.builtin_diff);
-    try env.putBuiltin("integrate", builtins.builtin_integrate);
-    try env.putBuiltin("expand", builtins.builtin_expand);
-    try env.putBuiltin("sin", builtins.builtin_sin);
-    try env.putBuiltin("cos", builtins.builtin_cos);
-    try env.putBuiltin("tan", builtins.builtin_tan);
-    try env.putBuiltin("asin", builtins.builtin_asin);
-    try env.putBuiltin("acos", builtins.builtin_acos);
-    try env.putBuiltin("atan", builtins.builtin_atan);
-    try env.putBuiltin("atan2", builtins.builtin_atan2);
-    try env.putBuiltin("sinh", builtins.builtin_sinh);
-    try env.putBuiltin("cosh", builtins.builtin_cosh);
-    try env.putBuiltin("tanh", builtins.builtin_tanh);
-    try env.putBuiltin("asinh", builtins.builtin_asinh);
-    try env.putBuiltin("acosh", builtins.builtin_acosh);
-    try env.putBuiltin("atanh", builtins.builtin_atanh);
-    try env.putBuiltin("exp", builtins.builtin_exp);
-    try env.putBuiltin("ln", builtins.builtin_ln);
-    try env.putBuiltin("log", builtins.builtin_log);
-    try env.putBuiltin("sqrt", builtins.builtin_sqrt);
-    try env.putBuiltin("substitute", builtins.builtin_substitute);
-    try env.putBuiltin("taylor", builtins.builtin_taylor);
-    try env.putBuiltin("solve", builtins.builtin_solve);
-    try env.putBuiltin("complex", builtins.builtin_complex);
-    try env.putBuiltin("real", builtins.builtin_real);
-    try env.putBuiltin("imag", builtins.builtin_imag);
-    try env.putBuiltin("conj", builtins.builtin_conj);
-    try env.putBuiltin("magnitude", builtins.builtin_abs_complex);
-    try env.putBuiltin("arg", builtins.builtin_arg);
-    try env.putBuiltin("limit", builtins.builtin_limit);
-    try env.putBuiltin("rule", builtins.builtin_rule);
-    try env.putBuiltin("rewrite", builtins.builtin_rewrite);
-    try env.putBuiltin("factor", builtins.builtin_factor);
-    try env.putBuiltin("partial-fractions", builtins.builtin_partial_fractions);
-    try env.putBuiltin("collect", builtins.builtin_collect);
-    // Matrix operations
-    try env.putBuiltin("matrix", builtins.builtin_matrix);
-    try env.putBuiltin("det", builtins.builtin_det);
-    try env.putBuiltin("transpose", builtins.builtin_transpose);
-    try env.putBuiltin("trace", builtins.builtin_trace);
-    try env.putBuiltin("matmul", builtins.builtin_matmul);
-    try env.putBuiltin("inv", builtins.builtin_inv);
-    try env.putBuiltin("eigenvalues", builtins.builtin_eigenvalues);
-    try env.putBuiltin("eigenvectors", builtins.builtin_eigenvectors);
-    try env.putBuiltin("linsolve", builtins.builtin_linsolve);
-    // Vector operations
-    try env.putBuiltin("vector", builtins.builtin_vector);
-    try env.putBuiltin("dot", builtins.builtin_dot);
-    try env.putBuiltin("cross", builtins.builtin_cross);
-    try env.putBuiltin("norm", builtins.builtin_norm);
-    // Boolean algebra
-    try env.putBuiltin("and", builtins.builtin_and);
-    try env.putBuiltin("or", builtins.builtin_or);
-    try env.putBuiltin("not", builtins.builtin_not);
-    try env.putBuiltin("xor", builtins.builtin_xor);
-    try env.putBuiltin("implies", builtins.builtin_implies);
-    // Modular arithmetic
-    try env.putBuiltin("mod", builtins.builtin_mod);
-    try env.putBuiltin("gcd", builtins.builtin_gcd);
-    try env.putBuiltin("lcm", builtins.builtin_lcm);
-    try env.putBuiltin("modpow", builtins.builtin_modpow);
-    // Polynomial operations
-    try env.putBuiltin("coeffs", builtins.builtin_coeffs);
-    try env.putBuiltin("polydiv", builtins.builtin_polydiv);
-    try env.putBuiltin("polygcd", builtins.builtin_polygcd);
-    try env.putBuiltin("polylcm", builtins.builtin_polylcm);
-    // Assumptions
-    try env.putBuiltin("assume", builtins.builtin_assume);
-    try env.putBuiltin("is?", builtins.builtin_is);
-    // Comparisons
-    try env.putBuiltin("=", builtins.builtin_eq);
-    try env.putBuiltin("<", builtins.builtin_lt);
-    try env.putBuiltin(">", builtins.builtin_gt);
-    // Special functions
-    try env.putBuiltin("gamma", builtins.builtin_gamma);
-    try env.putBuiltin("beta", builtins.builtin_beta);
-    try env.putBuiltin("erf", builtins.builtin_erf);
-    try env.putBuiltin("erfc", builtins.builtin_erfc);
-    try env.putBuiltin("besselj", builtins.builtin_besselj);
-    try env.putBuiltin("bessely", builtins.builtin_bessely);
-    try env.putBuiltin("digamma", builtins.builtin_digamma);
-    // Differential equations
-    try env.putBuiltin("dsolve", builtins.builtin_dsolve);
-    // Fourier & Laplace transforms
-    try env.putBuiltin("fourier", builtins.builtin_fourier);
-    try env.putBuiltin("laplace", builtins.builtin_laplace);
-    try env.putBuiltin("inv-laplace", builtins.builtin_inv_laplace);
-    // Tensor operations
-    try env.putBuiltin("tensor", builtins.builtin_tensor);
-    try env.putBuiltin("tensor-rank", builtins.builtin_tensor_rank);
-    try env.putBuiltin("tensor-contract", builtins.builtin_tensor_contract);
-    try env.putBuiltin("tensor-product", builtins.builtin_tensor_product);
-    // Polynomial interpolation
-    try env.putBuiltin("lagrange", builtins.builtin_lagrange);
-    try env.putBuiltin("newton-interp", builtins.builtin_newton_interp);
-    // Numerical root finding
-    try env.putBuiltin("newton-raphson", builtins.builtin_newton_raphson);
-    try env.putBuiltin("bisection", builtins.builtin_bisection);
-    // Continued fractions
-    try env.putBuiltin("to-cf", builtins.builtin_to_cf);
-    try env.putBuiltin("from-cf", builtins.builtin_from_cf);
-    try env.putBuiltin("cf-convergent", builtins.builtin_cf_convergent);
-    try env.putBuiltin("cf-rational", builtins.builtin_cf_rational);
-    // List operations
-    try env.putBuiltin("car", builtins.builtin_car);
-    try env.putBuiltin("cdr", builtins.builtin_cdr);
-    try env.putBuiltin("cons", builtins.builtin_cons);
-    try env.putBuiltin("list", builtins.builtin_list_fn);
-    try env.putBuiltin("length", builtins.builtin_length);
-    try env.putBuiltin("nth", builtins.builtin_nth);
-    try env.putBuiltin("map", builtins.builtin_map);
-    try env.putBuiltin("filter", builtins.builtin_filter);
-    try env.putBuiltin("reduce", builtins.builtin_reduce);
-    try env.putBuiltin("append", builtins.builtin_append);
-    try env.putBuiltin("reverse", builtins.builtin_reverse);
-    try env.putBuiltin("range", builtins.builtin_range);
-
-    // Memoization
-    try env.putBuiltin("memoize", builtins.builtin_memoize);
-    try env.putBuiltin("memo-clear", builtins.builtin_memo_clear);
-    try env.putBuiltin("memo-stats", builtins.builtin_memo_stats);
-
-    // Plotting
-    try env.putBuiltin("plot-ascii", builtins.builtin_plot_ascii);
-    try env.putBuiltin("plot-svg", builtins.builtin_plot_svg);
-    try env.putBuiltin("plot-points", builtins.builtin_plot_points);
-
-    // Step-by-step solutions
-    try env.putBuiltin("diff-steps", builtins.builtin_diff_steps);
-    try env.putBuiltin("integrate-steps", builtins.builtin_integrate_steps);
-    try env.putBuiltin("simplify-steps", builtins.builtin_simplify_steps);
-    try env.putBuiltin("solve-steps", builtins.builtin_solve_steps);
+    // Initialize builtins (shared registry: single source of truth)
+    try registry.installBuiltins(&env);
 
     const stdout_file = std.fs.File.stdout();
     const stdin_file = std.fs.File.stdin();
@@ -472,13 +357,21 @@ pub fn run(allocator: std.mem.Allocator) !void {
             if (expr_buf.items.len == 0) {
                 continue;
             }
-            // In multiline mode, empty line is just continuation
-            try expr_buf.append(' ');
+            // In multiline mode, an empty line cancels the pending input
+            // (escape hatch for unbalanced parens)
+            try stdout.print("(input cancelled)\n", .{});
+            expr_buf.clearRetainingCapacity();
             continue;
         }
 
         // Handle special commands (only on first line)
         if (expr_buf.items.len == 0) {
+            if (std.mem.eql(u8, line, "history")) {
+                for (session_inputs.items, 1..) |input_line, num| {
+                    try stdout.print("{d: >4}  {s}\n", .{ num, input_line });
+                }
+                continue;
+            }
             if (std.mem.eql(u8, line, "help")) {
                 try stdout.print("{s}\n", .{help_text});
                 continue;
@@ -542,11 +435,43 @@ pub fn run(allocator: std.mem.Allocator) !void {
             }
         }
 
+        // Strip trailing ';' comment (unless inside a string)
+        var code_end: usize = line.len;
+        var in_str = false;
+        for (line, 0..) |c, i| {
+            if (c == '"') in_str = !in_str;
+            if (c == ';' and !in_str) {
+                code_end = i;
+                break;
+            }
+        }
+        var code = std.mem.trim(u8, line[0..code_end], " \t");
+        if (code.len == 0) continue;
+
+        // History recall: !! repeats the last input, !n recalls entry n
+        if (expr_buf.items.len == 0 and code.len >= 2 and code[0] == '!') {
+            if (std.mem.eql(u8, code, "!!")) {
+                if (session_inputs.items.len == 0) {
+                    try stdout.print("history is empty\n", .{});
+                    continue;
+                }
+                code = session_inputs.items[session_inputs.items.len - 1];
+                try stdout.print("{s}\n", .{code});
+            } else if (std.fmt.parseInt(usize, code[1..], 10)) |num| {
+                if (num == 0 or num > session_inputs.items.len) {
+                    try stdout.print("no history entry {d}\n", .{num});
+                    continue;
+                }
+                code = session_inputs.items[num - 1];
+                try stdout.print("{s}\n", .{code});
+            } else |_| {}
+        }
+
         // Append line to expression buffer
         if (expr_buf.items.len > 0) {
             try expr_buf.append(' ');
         }
-        try expr_buf.appendSlice(line);
+        try expr_buf.appendSlice(code);
 
         // Check if expression is complete (balanced parens)
         const paren_depth = countParens(expr_buf.items);
@@ -555,8 +480,11 @@ pub fn run(allocator: std.mem.Allocator) !void {
             continue;
         }
 
-        // Expression complete, process it
-        const input = std.mem.trim(u8, expr_buf.items, " \t\r\n");
+        // Expression complete, process it. Copy into session-lived storage
+        // first: symbols are slices into this buffer and may be stored in env.
+        const trimmed_input = std.mem.trim(u8, expr_buf.items, " \t\r\n");
+        const input = try allocator.dupe(u8, trimmed_input);
+        try session_inputs.append(allocator, input);
 
         var tokenizer = Tokenizer.init(input);
         var tokens: std.ArrayList([]const u8) = .empty;
@@ -573,11 +501,18 @@ pub fn run(allocator: std.mem.Allocator) !void {
             continue;
         }
 
+        // New-user hint: Lispium is prefix-only
+        if (@import("parser.zig").looksLikeInfix(tokens.items)) {
+            try stdout.print("hint: Lispium uses prefix notation, e.g. (+ 1 2) or (sin x)\n", .{});
+        }
+
         var parser = Parser.init(allocator, tokens);
         const expr = parser.parseExpr() catch |err| {
             const err_msg = switch (err) {
                 error.UnexpectedToken => "unexpected token in expression",
                 error.UnexpectedEOF => "unexpected end of input (missing closing paren?)",
+                error.RecursionLimit => "expression too deeply nested",
+                error.UnsupportedString => "strings are not supported (use numbers and symbols)",
                 error.OutOfMemory => "out of memory",
             };
             try stdout.print("Error: {s}\n", .{err_msg});
@@ -595,13 +530,20 @@ pub fn run(allocator: std.mem.Allocator) !void {
                 error.InvalidArgument => "invalid argument(s)",
                 error.KeyNotFound => "unknown function or variable",
                 error.OutOfMemory => "out of memory",
-                error.RecursionLimit => "recursion limit exceeded",
+                error.RecursionLimit => "recursion or iteration limit exceeded",
                 error.InvalidLambda => "invalid lambda expression",
                 error.InvalidDefine => "invalid define expression",
+                error.InvalidSyntax => "malformed special form (wrong shape or argument count)",
                 error.WrongNumberOfArguments => "wrong number of arguments",
                 error.EvaluationError => "evaluation error",
+                error.Undefined => "result is mathematically undefined at this point",
             };
-            try stdout.print("Error: {s}\n", .{err_msg});
+            const ctx = @import("evaluator.zig").takeErrorContext();
+            if (ctx.len > 0) {
+                try stdout.print("Error: {s} (in '{s}')\n", .{ err_msg, ctx });
+            } else {
+                try stdout.print("Error: {s}\n", .{err_msg});
+            }
             expr_buf.clearRetainingCapacity();
             continue;
         };
@@ -692,6 +634,10 @@ fn validateExpr(expr: *const Expr) PrintError!void {
 fn printNum(n: f64, writer: anytype) !void {
     if (n == @floor(n) and @abs(n) < 1e15) {
         try writer.print("{d:.0}", .{n});
+    } else if (@abs(n) >= 1e15) {
+        // Very large magnitudes: scientific notation instead of hundreds
+        // of decimal digits
+        try writer.print("{e}", .{n});
     } else {
         try writer.print("{d}", .{n});
     }
@@ -731,6 +677,81 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
             // Get operator if it's a symbol
             const op = if (lst.items[0].* == .symbol) lst.items[0].symbol else null;
 
+            // Raw text results (plots, SVG, step-by-step output): print the
+            // text itself without wrapping it in an S-expression
+            if (op != null and lst.items.len == 2 and
+                (std.mem.eql(u8, op.?, "plot") or std.mem.eql(u8, op.?, "svg") or std.mem.eql(u8, op.?, "steps")))
+            {
+                switch (lst.items[1].*) {
+                    .symbol, .owned_symbol => |text| {
+                        try writer.print("{s}", .{text});
+                        return;
+                    },
+                    else => {},
+                }
+            }
+
+            // Prime factorization: (factors (2 2) (3 1)) -> 2^2 · 3
+            if (op != null and std.mem.eql(u8, op.?, "factors") and lst.items.len > 1) {
+                for (lst.items[1..], 0..) |pair, i| {
+                    if (i > 0) try writer.print(" Â· ", .{}); // ·
+                    if (pair.* == .list and pair.list.items.len == 2) {
+                        try printExprPretty(pair.list.items[0], writer, false);
+                        if (pair.list.items[1].* == .number and pair.list.items[1].number != 1) {
+                            try writer.print("^", .{});
+                            try printExprPretty(pair.list.items[1], writer, false);
+                        }
+                    } else {
+                        try printExprPretty(pair, writer, false);
+                    }
+                }
+                return;
+            }
+
+            // Quaternion: (quat w x y z) -> w + xi + yj + zk
+            if (op != null and std.mem.eql(u8, op.?, "quat") and lst.items.len == 5 and
+                lst.items[1].* == .number and lst.items[2].* == .number and
+                lst.items[3].* == .number and lst.items[4].* == .number)
+            {
+                try printNum(lst.items[1].number, writer);
+                const units = [_][]const u8{ "i", "j", "k" };
+                for (lst.items[2..5], 0..) |comp, i| {
+                    const v = comp.number;
+                    if (v >= 0) {
+                        try writer.print(" + ", .{});
+                        try printNum(v, writer);
+                    } else {
+                        try writer.print(" - ", .{});
+                        try printNum(-v, writer);
+                    }
+                    try writer.print("{s}", .{units[i]});
+                }
+                return;
+            }
+
+            // Finite field element: (gf 3 7) -> 3 (mod 7)
+            if (op != null and std.mem.eql(u8, op.?, "gf") and lst.items.len == 3 and
+                lst.items[1].* == .number and lst.items[2].* == .number)
+            {
+                try printNum(lst.items[1].number, writer);
+                try writer.print(" (mod ", .{});
+                try printNum(lst.items[2].number, writer);
+                try writer.print(")", .{});
+                return;
+            }
+
+            // Continued fraction: (cf 3 7 15) -> [3; 7, 15]
+            if (op != null and std.mem.eql(u8, op.?, "cf") and lst.items.len > 1) {
+                try writer.print("[", .{});
+                for (lst.items[1..], 0..) |item, i| {
+                    if (i == 1) try writer.print("; ", .{});
+                    if (i > 1) try writer.print(", ", .{});
+                    try printExprPretty(item, writer, false);
+                }
+                try writer.print("]", .{});
+                return;
+            }
+
             // Complex number pretty printing
             if (op != null and std.mem.eql(u8, op.?, "complex") and lst.items.len == 3 and
                 lst.items[1].* == .number and lst.items[2].* == .number)
@@ -768,16 +789,26 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
                 return;
             }
 
-            // Power with superscript for simple exponents
+            // Power printing: (^ x 0.5) as âx, superscripts for 2/3,
+            // parenthesized bases when the base is compound (avoids xÂ²^0.5)
             if (op != null and std.mem.eql(u8, op.?, "^") and lst.items.len == 3) {
+                if (lst.items[2].* == .number and lst.items[2].number == 0.5) {
+                    try writer.print("â(", .{}); // â
+                    try printExprPretty(lst.items[1], writer, false);
+                    try writer.print(")", .{});
+                    return;
+                }
+                const base_is_atom = lst.items[1].* == .number or lst.items[1].* == .symbol or lst.items[1].* == .owned_symbol;
+                if (!base_is_atom) try writer.print("(", .{});
                 try printExprPretty(lst.items[1], writer, false);
+                if (!base_is_atom) try writer.print(")", .{});
                 if (lst.items[2].* == .number) {
                     const exp = lst.items[2].number;
                     if (exp == 2) {
-                        try writer.print("\xc2\xb2", .{}); // ²
+                        try writer.print("Â²", .{}); // Â²
                         return;
                     } else if (exp == 3) {
-                        try writer.print("\xc2\xb3", .{}); // ³
+                        try writer.print("Â³", .{}); // Â³
                         return;
                     }
                 }
@@ -794,26 +825,33 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
                 return;
             }
 
-            // Infix operators: +, -, *, /
+            // Infix operators: +, -, *, / (outer parens omitted at top level)
             if (op != null and (std.mem.eql(u8, op.?, "+") or std.mem.eql(u8, op.?, "-") or
                 std.mem.eql(u8, op.?, "*") or std.mem.eql(u8, op.?, "/")))
             {
                 const op_char = op.?;
                 const op_sym = if (std.mem.eql(u8, op_char, "*"))
-                    "\xc2\xb7" // ·
+                    "Â·" // Â·
                 else if (std.mem.eql(u8, op_char, "/"))
                     "/"
                 else
                     op_char;
 
-                try writer.print("(", .{});
+                // Unary minus: -x
+                if (std.mem.eql(u8, op_char, "-") and lst.items.len == 2) {
+                    try writer.print("-", .{});
+                    try printExprPretty(lst.items[1], writer, false);
+                    return;
+                }
+
+                if (!is_top) try writer.print("(", .{});
                 for (lst.items[1..], 0..) |item, i| {
                     if (i > 0) {
                         try writer.print(" {s} ", .{op_sym});
                     }
                     try printExprPretty(item, writer, false);
                 }
-                try writer.print(")", .{});
+                if (!is_top) try writer.print(")", .{});
                 return;
             }
 

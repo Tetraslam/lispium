@@ -198,5 +198,5 @@ test "laplacian of sin(x)" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(* -1 (sin x))", str);
+    try testing.expectEqualStrings("(- (sin x))", str);
 }

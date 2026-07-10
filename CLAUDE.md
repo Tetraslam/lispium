@@ -25,7 +25,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 
 ```bash
 zig build run -- repl          # Run interactive REPL
-zig build test                 # Run all 453 tests
+zig build test                 # Run all 501 tests
 zig build test --summary all   # Run tests with verbose output showing names
 zig build -Doptimize=ReleaseSafe  # Build optimized release binary
 ```
@@ -34,7 +34,7 @@ zig build -Doptimize=ReleaseSafe  # Build optimized release binary
 
 ## Architecture Overview
 
-Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with **zero external dependencies**. The codebase totals ~16,800 lines across all modules.
+Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with **zero external dependencies**. The codebase totals roughly 18,000 lines across all modules.
 
 ### Data Flow Pipeline
 
@@ -48,16 +48,17 @@ Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with
 
 ### File Size Reference
 
-| File | Lines | Description |
-|------|-------|-------------|
-| `builtins.zig` | 4,378 | 80+ builtin functions |
-| `symbolic.zig` | 2,982 | Core CAS engine |
-| `evaluator.zig` | 784 | Expression evaluator |
-| `repl.zig` | 487 | Interactive shell |
-| `environment.zig` | 123 | Symbol table & assumptions |
-| `parser.zig` | 110 | Recursive descent parser |
-| `tokenizer.zig` | 31 | Lexical scanner |
-| `src/tests/*.zig` | ~10,000 | 453 tests organized by feature |
+| File | Description |
+|------|-------------|
+| `builtins.zig` | 90+ builtin functions |
+| `symbolic.zig` | Core CAS engine |
+| `evaluator.zig` | Expression evaluator & special forms |
+| `registry.zig` | Single source of truth for builtin registration |
+| `repl.zig` | Interactive shell |
+| `environment.zig` | Symbol table & assumptions |
+| `parser.zig` | Recursive descent parser |
+| `tokenizer.zig` | Lexical scanner |
+| `src/tests/*.zig` | 501 tests organized by feature |
 
 ---
 
@@ -106,6 +107,7 @@ pub const Error = error{
 - `(...)` becomes `Expr.list`
 - Numbers (parsed via `std.fmt.parseFloat`) become `Expr.number`
 - Everything else becomes `Expr.symbol`
+- Nesting deeper than `MAX_PARSE_DEPTH` (256) returns `error.RecursionLimit`
 
 ### environment.zig (123 lines)
 
@@ -122,7 +124,8 @@ pub const Env = struct {
     pub fn init(allocator: std.mem.Allocator) Env;
     pub fn deinit(self: *Env) void;
     pub fn get(self: *Env, key: []const u8) !*Expr;
-    pub fn put(self: *Env, key: []const u8, val: *Expr) !void;
+    pub fn put(self: *Env, key: []const u8, val: *Expr) !void;  // dupes the key (env owns it)
+    pub fn remove(self: *Env, key: []const u8) bool;            // frees the owned key
     pub fn getBuiltin(self: *Env, key: []const u8) !BuiltinFn;
     pub fn putBuiltin(self: *Env, key: []const u8, fn_ptr: BuiltinFn) !void;
     pub fn assume(self: *Env, symbol: []const u8, assumption: Assumption) !void;
@@ -159,8 +162,12 @@ pub const Error = error{
     OutOfMemory,
     InvalidLambda,
     InvalidDefine,
+    InvalidSyntax,
     WrongNumberOfArguments,
 } || BuiltinError || EnvError || symbolic.SimplifyError;
+
+pub const MAX_EVAL_DEPTH = 2000;          // recursion guard (clean error, no stack overflow)
+pub const MAX_LOOP_ITERATIONS = 10_000_000; // cap for (sum ...) and (product ...)
 
 pub fn eval(expr: *Expr, env: *Env) Error!*Expr;
 ```
@@ -171,6 +178,11 @@ pub fn eval(expr: *Expr, env: *Env) Error!*Expr;
 3. `owned_symbol` → same as symbol
 4. Lambdas → copy and return
 5. Lists → check special forms first, then evaluate operator and call
+
+**Closures:** lambdas capture free variables by value at creation time.
+Names bound by nested lambda/let/letrec/sum/product forms are respected
+(shadowed), and recursive references (the function's own name, letrec
+names) stay symbolic so recursion works.
 
 ### builtins.zig (4,378 lines)
 
@@ -342,23 +354,28 @@ return result;
 
 ## Builtin Functions Reference
 
-### Arithmetic (5 functions)
+### Arithmetic (10 functions)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `+` | `(+ a b c ...)` | Addition (variadic) |
-| `-` | `(- a b ...)` | Subtraction |
-| `*` | `(* a b c ...)` | Multiplication (variadic) |
-| `/` | `(/ a b)` | Division |
-| `^` / `pow` | `(^ base exp)` | Exponentiation |
+| `+` | `(+ a b c ...)` | Addition (variadic; complex, vectors, matrices) |
+| `-` | `(- a b ...)` or `(- a)` | Subtraction; unary form negates |
+| `*` | `(* a b c ...)` | Multiplication (variadic; complex, scalar·vector/matrix) |
+| `/` | `(/ a b)` or `(/ a)` | Division; unary form is the reciprocal |
+| `^` / `pow` | `(^ base exp)` | Exponentiation (complex base; negative base with fractional exponent gives the principal complex value) |
+| `abs` | `(abs x)` | Absolute value (magnitude for complex) |
+| `floor` | `(floor x)` | Round down |
+| `ceil` | `(ceil x)` | Round up |
+| `round` | `(round x)` | Round to nearest |
+| `sign` | `(sign x)` | -1, 0, or 1 |
 
 ### Comparison (3 functions)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `=` | `(= a b)` | Equality (returns 1 or 0) |
-| `<` | `(< a b)` | Less than |
-| `>` | `(> a b)` | Greater than |
+| `=` | `(= a b ...)` | Equality (variadic; returns 1 or 0) |
+| `<` | `(< a b ...)` | Chained less-than; symbolic args stay inert |
+| `>` | `(> a b ...)` | Chained greater-than; symbolic args stay inert |
 
 ### Boolean Logic (5 functions)
 
@@ -388,8 +405,8 @@ return result;
 | `tan` | `(tan x)` | Tangent |
 | `exp` | `(exp x)` | Exponential (e^x) |
 | `ln` | `(ln x)` | Natural logarithm |
-| `log` | `(log x)` or `(log x base)` | Logarithm (default base e) |
-| `sqrt` | `(sqrt x)` | Square root (returns `(^ x 0.5)`) |
+| `log` | `(log x)` or `(log x base)` | Logarithm of x (default base 10) |
+| `sqrt` | `(sqrt x)` | Square root; `(sqrt -4)` → `(complex 0 2)` |
 
 ### Inverse Trigonometric Functions (4 functions)
 
@@ -411,7 +428,7 @@ return result;
 | `acosh` | `(acosh x)` | Inverse hyperbolic cosine |
 | `atanh` | `(atanh x)` | Inverse hyperbolic tangent |
 
-### Special Functions (6 functions)
+### Special Functions (7 functions)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -496,7 +513,7 @@ return result;
 |----------|-----------|-------------|
 | `factorial` / `!` | `(factorial n)` or `(! n)` | Factorial |
 | `binomial` / `choose` | `(binomial n k)` | Binomial coefficient |
-| `permutations` | `(permutations n r)` | P(n,r) |
+| `permutations` | `(permutations n r)` | P(n,r); errors when r > n |
 | `combinations` | `(combinations n r)` | C(n,r) |
 
 ### Number Theory (5 functions)
@@ -507,7 +524,7 @@ return result;
 | `factorize` | `(factorize n)` | Prime factorization |
 | `extgcd` | `(extgcd a b)` | Extended GCD (Bezout coefficients) |
 | `totient` | `(totient n)` | Euler's totient function |
-| `crt` | `(crt (r1 m1) (r2 m2) ...)` | Chinese Remainder Theorem |
+| `crt` | `(crt (vector r1 r2 ...) (vector m1 m2 ...))` | Chinese Remainder Theorem |
 
 ### Statistics (6 functions)
 
@@ -525,7 +542,7 @@ return result;
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `coeffs` | `(coeffs a b c ...)` | Create coefficient list |
-| `polydiv` | `(polydiv p1 p2 var)` | Polynomial division |
+| `polydiv` | `(polydiv (coeffs ...) (coeffs ...) var)` | Polynomial division (coefficient lists) |
 | `polygcd` | `(polygcd p1 p2)` | Polynomial GCD |
 | `polylcm` | `(polylcm p1 p2)` | Polynomial LCM |
 | `roots` | `(roots expr var)` | Find polynomial roots |
@@ -548,7 +565,7 @@ return result;
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `gf` | `(gf value prime)` | Create element in GF(p) |
+| `gf` | `(gf value prime)` | Create element in GF(p); p must be prime |
 | `gf+` | `(gf+ a b)` | Addition in GF(p) |
 | `gf-` | `(gf- a b)` | Subtraction in GF(p) |
 | `gf*` | `(gf* a b)` | Multiplication in GF(p) |
@@ -589,13 +606,13 @@ return result;
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `dsolve` | `(dsolve eqn y x)` | Solve first-order ODE |
+| `dsolve` | `(dsolve (= (diff y x) rhs) y x)` | Solve first-order ODE (special form: the equation is not pre-evaluated) |
 
 ### Fourier & Laplace Transforms (3 functions)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fourier` | `(fourier expr x n)` | Fourier series expansion |
+| `fourier` | `(fourier expr x n)` | Fourier series: returns `(fourier-series a0 ((a1 b1) ... (an bn)))` with numerically computed (noise-snapped) coefficients |
 | `laplace` | `(laplace expr t s)` | Laplace transform |
 | `inv-laplace` | `(inv-laplace expr s t)` | Inverse Laplace transform |
 
@@ -612,8 +629,8 @@ return result;
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `lagrange` | `(lagrange points var)` | Lagrange interpolation |
-| `newton-interp` | `(newton-interp points var)` | Newton interpolation |
+| `lagrange` | `(lagrange (list (vector x y) ...) var)` | Lagrange interpolation |
+| `newton-interp` | `(newton-interp (list (vector x y) ...) var)` | Newton interpolation |
 
 ### Numerical Root Finding (2 functions)
 
@@ -706,7 +723,11 @@ pub fn simplify(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*
 - Trig identities: `(sin 0)` → `0`, `(cos 0)` → `1`
 - Log/exp identities: `(exp 0)` → `1`, `(ln 1)` → `0`, `(ln (exp x))` → `x`
 - Double negation: `(- (- x))` → `x`
-- Like term collection: `(+ x x)` → `(* 2 x)`
+- Like term collection: `(+ x x)` → `(* 2 x)` (commutative-aware: `xy + yx` → `2xy`)
+- Power laws: `x^a·x^b` → `x^(a+b)`, `(x^a)^b` → `x^(ab)` (integer b), `x^a/x^b` → `x^(a-b)`, `x·(1/x)` → `1`
+- Pythagorean identity: `sin²(u) + cos²(u)` → `1`
+- Exact values at pi: `(sin pi)` → `0`, `(cos pi)` → `-1`
+- Canonical negation: `(* -1 x)` → `(- x)`; `(- x -n)` → `(+ x n)`
 - Nested operations flattening
 
 ### Differentiation
@@ -722,7 +743,10 @@ pub fn diff(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocato
 - Product rule: `d/dx(a * b)` = `a * db/dx + da/dx * b`
 - Quotient rule: `d/dx(a / b)` = `(b * da/dx - a * db/dx) / b²`
 - Power rule: `d/dx(x^n)` = `n * x^(n-1)`
+- Exponentials: `d/dx(a^x)` = `a^x ln a`; general `d/dx(u^v)` = `u^v (v' ln u + v u'/u)`
+- Absolute value: `d/dx(|u|)` = `sign(u) u'`
 - Chain rule for: `sin`, `cos`, `tan`, `exp`, `ln`, `sqrt`
+- Unknown functions return an inert `(diff expr var)` form (never a silently wrong result)
 
 ### Integration
 
@@ -735,7 +759,7 @@ pub fn integrate(expr: *const Expr, var_name: []const u8, allocator: std.mem.All
 - Variables: `∫x dx` = `x²/2`
 - Powers: `∫x^n dx` = `x^(n+1)/(n+1)` (n ≠ -1)
 - Reciprocal: `∫1/x dx` = `ln(x)`
-- Exponentials: `∫e^x dx` = `e^x`
+- Exponentials: `∫e^x dx` = `e^x` (both `(exp x)` and `(^ e x)`), `∫a^x dx` = `a^x/ln a`
 - Trig: `∫sin(x) dx` = `-cos(x)`, `∫cos(x) dx` = `sin(x)`
 - Sum rule: `∫(a + b) dx` = `∫a dx + ∫b dx`
 - Constant multiple: `∫c*f dx` = `c*∫f dx`
@@ -757,6 +781,7 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
 **Supported equations:**
 - Linear: `ax + b = 0` → `x = -b/a`
 - Quadratic: `ax² + bx + c = 0` → quadratic formula (includes complex roots)
+- Contradictions (e.g. `5 = 0`) return the symbol `no-solution`; identities return `all`
 
 ### Polynomial Operations
 
@@ -831,9 +856,11 @@ Binds a value or function to a name in the environment.
 ```
 
 Conditional evaluation. Truthy: non-zero numbers, symbols, non-empty lists, lambdas.
+If the condition is an undecidable symbolic comparison (e.g. `(> x 0)` with
+symbolic `x`), the whole `if` expression is returned inert.
 
 ```lisp
-(if (> x 0) x (- x))  ; absolute value
+(if (> x 0) x (- x))  ; stays symbolic until x is known
 ```
 
 ### let
@@ -920,8 +947,9 @@ Product notation.
 
 ### How Assumptions Affect Simplification
 
-Assumptions can enable additional simplifications:
-- `positive` variables: allows `sqrt(x²) = x`
+Assumptions can enable additional simplifications (applied by `(simplify ...)`,
+which is assumption-aware via the environment):
+- `positive` variables: `(simplify (sqrt (^ x 2)))` → `x`
 - `integer` variables: may affect certain reductions
 - `nonzero` variables: allows division simplifications
 
@@ -929,7 +957,7 @@ Assumptions can enable additional simplifications:
 
 ## Test Organization
 
-Tests are organized in `src/tests/` with 453 tests across 37 files:
+Tests are organized in `src/tests/` with 501 tests across 38 files:
 
 | File | Tests | Coverage |
 |------|-------|----------|
@@ -1067,17 +1095,14 @@ pub fn builtin_myfunction(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*E
 }
 ```
 
-**Step 2**: Register in `src/tests/helpers.zig` setupEnv():
+**Step 2**: Register once in `src/registry.zig` `installBuiltins()`:
 
 ```zig
 try env.putBuiltin("myfunction", builtins.builtin_myfunction);
 ```
 
-**Step 3**: Register in `src/repl.zig` run():
-
-```zig
-try env.putBuiltin("myfunction", builtins.builtin_myfunction);
-```
+The CLI, file runner, REPL, and tests all share this registry, so a single
+registration covers every entry point.
 
 ### 2. Adding Symbolic Rules
 
@@ -1255,12 +1280,14 @@ pub const BuiltinError = error{
     InvalidArgument,
     OutOfMemory,
     EvaluationError,
+    Undefined,       // mathematically undefined (e.g. Taylor at a singularity)
 };
 
 // Symbolic CAS errors
 pub const SimplifyError = error{
     OutOfMemory,
     RecursionLimit,
+    Undefined,
 };
 
 // Evaluator errors (union of above plus)
@@ -1268,6 +1295,7 @@ pub const Error = error{
     UnsupportedOperator,
     InvalidLambda,
     InvalidDefine,
+    InvalidSyntax,   // malformed special form (if/let/sum/matrix shape errors)
     WrongNumberOfArguments,
 } || BuiltinError || EnvError || SimplifyError;
 

@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.5.0] - 2026-07-09
+
+Correctness and robustness overhaul. Highlights:
+
+### Fixed
+- REPL/file-runner memory corruption: stored definitions, rules, and lambdas
+  referenced a reused input buffer, silently breaking lookups (e.g.
+  `(define (square x) ...)` then `(square 5)`) and crashing on cookbook files.
+  Inputs are now session-lived and environment keys are owned.
+- Unary minus: `(- 5)` now returns `-5` (was `5`); `(/ x)` is the reciprocal.
+- `(diff (^ a x) x)`, `(diff (^ x x) x)`, and `(diff (abs x) x)` returned the
+  input expression as its own derivative; all now differentiate correctly and
+  unknown functions return an inert `(diff ...)` form.
+- `(log x base)` argument order now matches the documentation.
+- `(limit (^ (+ 1 (/ 1 x)) x) x inf)` returned 1; now returns e (indeterminate
+  power forms use exp/log transform with a numeric-probe fallback).
+- Taylor series included one term too few and emitted division-by-zero garbage
+  at singularities (now a clean "undefined" error).
+- Definite integrals with symbolic bounds fold numerically:
+  `(integrate (sin x) x 0 pi)` => 2.
+- Singular matrix inversion, bisection without a sign change, `permutations`
+  with k > n, non-prime `gf` moduli, and negative `nth` indices now error
+  instead of returning garbage (the last one crashed the process).
+- Recursion depth and sum/product iteration are capped with clean errors
+  instead of stack-overflow segfaults and infinite hangs.
+- `memoize` no longer leaks; dsolve internals no longer leak.
+- `cf-rational` handles negative denominators.
+
+### Added
+- Closures: lambdas capture their defining environment by value
+  (`make-adder`/`compose` now work).
+- `dsolve` is a special form, so `(dsolve (= (diff y x) y) y x)` works as
+  documented.
+- Complex arithmetic wired into `+ - * / ^ sqrt exp abs`; `(sqrt -4)` => 2i,
+  `(evalf (exp (complex 0 pi)))` => -1; negative base with fractional exponent
+  returns the principal complex value instead of NaN.
+- Vector/matrix arithmetic: elementwise `+`/`-`, scalar `*` and `/`.
+- New builtins: `abs`, `floor`, `ceil`, `round`, `sign`.
+- Symbolic 2x2 eigenvalues; symbolic comparisons stay inert and `if` defers on
+  undecidable conditions.
+- Simplifier: power laws (x^a*x^b, (x^a)^b, x^a/x^b), sin^2+cos^2=1, sin/cos/
+  tan of pi, commutative like-term merging, `(* -1 x)` => `(- x)`,
+  assumption-aware `sqrt(x^2)=x`.
+- `integrate` handles `(^ e x)` and `(^ a x)`.
+- Single shared builtin registry (the REPL previously exposed only 120 of 163
+  builtins); `eval` evaluates every expression in its input; infix-notation
+  hint for new users; REPL comment handling.
+- Pretty printer: sqrt/quaternion/GF/factors/continued-fraction rendering, raw
+  text output for plots/steps/SVG, scientific notation for huge numbers.
+- LaTeX: `\sqrt{}`, lambda bodies, inert integrals.
+- 41 regression tests; dsolve tests assert real solutions.
+
+### Changed
+- CLI uses the fast SMP allocator: naive fib(20) dropped from ~15.7s to ~0.6s
+  in debug builds.
+- `factorize` returns `(factors (p e) ...)`; `solve` reports `no-solution` for
+  contradictions; `assume` returns a confirmation.
+
 ## [Unreleased]
 
 ### Added

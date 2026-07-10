@@ -216,7 +216,7 @@ test "log: custom base" {
     var env = try h.setupEnv(allocator);
     defer env.deinit();
 
-    const expr = try h.parseExpr(allocator, "(log 2 8)");
+    const expr = try h.parseExpr(allocator, "(log 8 2)");
     defer {
         expr.deinit(allocator);
         allocator.destroy(expr);
@@ -323,7 +323,7 @@ test "expand: (x+1)^2" {
     try testing.expect(result.* == .list);
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(+ (* x x) (* 2 x) 1)", str);
+    try testing.expectEqualStrings("(+ (^ x 2) (* 2 x) 1)", str);
 }
 
 // ============================================================================

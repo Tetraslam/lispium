@@ -202,7 +202,7 @@ test "diff: cos(x)" {
     try testing.expect(result.* == .list);
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(* -1 (sin x))", str);
+    try testing.expectEqualStrings("(- (sin x))", str);
 }
 
 test "diff: chain rule sin(2x)" {
@@ -411,7 +411,7 @@ test "integrate: sin(x)" {
     try testing.expect(result.* == .list);
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(* -1 (cos x))", str);
+    try testing.expectEqualStrings("(- (cos x))", str);
 }
 
 test "integrate: cos(x)" {
@@ -664,7 +664,7 @@ test "taylor: exp(x) around 0 order 4" {
     try testing.expect(result.* == .list);
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(+ 1 x (* 0.5 (^ x 2)) (* 0.16666666666666666 (^ x 3)))", str);
+    try testing.expectEqualStrings("(+ 1 x (* 0.5 (^ x 2)) (* 0.16666666666666666 (^ x 3)) (* 0.041666666666666664 (^ x 4)))", str);
 }
 
 // ============================================================================
@@ -912,5 +912,5 @@ test "diff: second derivative of sin(x)" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(* -1 (sin x))", str);
+    try testing.expectEqualStrings("(- (sin x))", str);
 }

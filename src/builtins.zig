@@ -10,9 +10,259 @@ pub const BuiltinError = error{
     InvalidArgument,
     OutOfMemory,
     EvaluationError,
+    /// The operation is mathematically undefined for the given input
+    /// (e.g. Taylor expansion at a singularity).
+    Undefined,
 };
 
 pub const BuiltinFn = *const fn (args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr;
+
+// ============================================================================
+// Shared numeric helpers (complex values, vectors, matrices, safe indexing)
+// ============================================================================
+
+const ComplexVal = struct { re: f64, im: f64 };
+
+/// Interprets an expression as a complex value: plain numbers have zero
+/// imaginary part; (complex re im) lists with numeric parts are unpacked.
+fn asComplex(e: *const Expr) ?ComplexVal {
+    switch (e.*) {
+        .number => |n| return .{ .re = n, .im = 0 },
+        .list => |lst| {
+            if (lst.items.len == 3 and lst.items[0].* == .symbol and
+                std.mem.eql(u8, lst.items[0].symbol, "complex") and
+                lst.items[1].* == .number and lst.items[2].* == .number)
+            {
+                return .{ .re = lst.items[1].number, .im = lst.items[2].number };
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+/// Creates a plain number when the imaginary part is zero, else (complex re im).
+fn makeComplexOrReal(env: *Env, re: f64, im: f64) BuiltinError!*Expr {
+    if (im == 0) {
+        const r = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        r.* = .{ .number = re };
+        return r;
+    }
+    return symbolic.makeComplex(env.allocator, re, im) catch return BuiltinError.OutOfMemory;
+}
+
+fn isTaggedList(e: *const Expr, tag: []const u8) bool {
+    if (e.* != .list) return false;
+    if (e.list.items.len == 0) return false;
+    const head = e.list.items[0];
+    return head.* == .symbol and std.mem.eql(u8, head.symbol, tag);
+}
+
+fn isVectorExpr(e: *const Expr) bool {
+    return isTaggedList(e, "vector");
+}
+
+fn isMatrixExpr(e: *const Expr) bool {
+    return isTaggedList(e, "matrix");
+}
+
+/// Converts a float to a list/vector index, rejecting negatives,
+/// non-integers, and out-of-range values.
+fn floatToIndex(n: f64, len: usize) ?usize {
+    if (n < 0 or n != @floor(n) or n >= 1e15) return null;
+    const idx: usize = @intFromFloat(n);
+    if (idx >= len) return null;
+    return idx;
+}
+
+/// Builds a simplified binary operation of two expression copies.
+fn simplifiedBinOp(env: *Env, op: []const u8, a: *const Expr, b: *const Expr) BuiltinError!*Expr {
+    const a_copy = symbolic.copyExpr(a, env.allocator) catch return BuiltinError.OutOfMemory;
+    const b_copy = symbolic.copyExpr(b, env.allocator) catch return BuiltinError.OutOfMemory;
+    const combined = symbolic.makeBinOp(env.allocator, op, a_copy, b_copy) catch return BuiltinError.OutOfMemory;
+    defer {
+        combined.deinit(env.allocator);
+        env.allocator.destroy(combined);
+    }
+    return symbolic.simplify(combined, env.allocator) catch return BuiltinError.OutOfMemory;
+}
+
+/// Elementwise binary op over two vectors of equal length.
+fn vectorElementwise(env: *Env, op: []const u8, a: *const Expr, b: *const Expr) BuiltinError!*Expr {
+    const a_items = a.list.items[1..];
+    const b_items = b.list.items[1..];
+    if (a_items.len != b_items.len) return BuiltinError.InvalidArgument;
+
+    var list: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (list.items) |item| {
+            item.deinit(env.allocator);
+            env.allocator.destroy(item);
+        }
+        list.deinit(env.allocator);
+    }
+    const head = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    head.* = .{ .symbol = "vector" };
+    list.append(env.allocator, head) catch return BuiltinError.OutOfMemory;
+    for (a_items, b_items) |ea, eb| {
+        list.append(env.allocator, try simplifiedBinOp(env, op, ea, eb)) catch return BuiltinError.OutOfMemory;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
+/// Elementwise binary op over two matrices of equal shape.
+fn matrixElementwise(env: *Env, op: []const u8, a: *const Expr, b: *const Expr) BuiltinError!*Expr {
+    const a_rows = a.list.items[1..];
+    const b_rows = b.list.items[1..];
+    if (a_rows.len != b_rows.len) return BuiltinError.InvalidArgument;
+
+    var list: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (list.items) |item| {
+            item.deinit(env.allocator);
+            env.allocator.destroy(item);
+        }
+        list.deinit(env.allocator);
+    }
+    const head = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    head.* = .{ .symbol = "matrix" };
+    list.append(env.allocator, head) catch return BuiltinError.OutOfMemory;
+    for (a_rows, b_rows) |ra, rb| {
+        if (ra.* != .list or rb.* != .list) return BuiltinError.InvalidArgument;
+        if (ra.list.items.len != rb.list.items.len) return BuiltinError.InvalidArgument;
+        var row: std.ArrayList(*Expr) = .empty;
+        errdefer {
+            for (row.items) |item| {
+                item.deinit(env.allocator);
+                env.allocator.destroy(item);
+            }
+            row.deinit(env.allocator);
+        }
+        for (ra.list.items, rb.list.items) |ea, eb| {
+            row.append(env.allocator, try simplifiedBinOp(env, op, ea, eb)) catch return BuiltinError.OutOfMemory;
+        }
+        const row_expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        row_expr.* = .{ .list = row };
+        list.append(env.allocator, row_expr) catch return BuiltinError.OutOfMemory;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
+/// Scales every element of a vector or matrix by a scalar expression.
+fn scaleElementwise(env: *Env, container: *const Expr, scalar: *const Expr) BuiltinError!*Expr {
+    var list: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (list.items) |item| {
+            item.deinit(env.allocator);
+            env.allocator.destroy(item);
+        }
+        list.deinit(env.allocator);
+    }
+    const head_copy = symbolic.copyExpr(container.list.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    list.append(env.allocator, head_copy) catch return BuiltinError.OutOfMemory;
+
+    const is_matrix = isMatrixExpr(container);
+    for (container.list.items[1..]) |elem| {
+        if (is_matrix) {
+            if (elem.* != .list) return BuiltinError.InvalidArgument;
+            var row: std.ArrayList(*Expr) = .empty;
+            errdefer {
+                for (row.items) |item| {
+                    item.deinit(env.allocator);
+                    env.allocator.destroy(item);
+                }
+                row.deinit(env.allocator);
+            }
+            for (elem.list.items) |cell| {
+                row.append(env.allocator, try simplifiedBinOp(env, "*", scalar, cell)) catch return BuiltinError.OutOfMemory;
+            }
+            const row_expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            row_expr.* = .{ .list = row };
+            list.append(env.allocator, row_expr) catch return BuiltinError.OutOfMemory;
+        } else {
+            list.append(env.allocator, try simplifiedBinOp(env, "*", scalar, elem)) catch return BuiltinError.OutOfMemory;
+        }
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
+// ============================================================================
+// Basic numeric functions: abs, floor, ceil, round, sign
+// ============================================================================
+
+/// Shared implementation for simple unary numeric functions with symbolic
+/// passthrough (returns an inert (name x) expression for symbolic args).
+fn unaryNumeric(args: std.ArrayList(*Expr), env: *Env, name: []const u8, f: *const fn (f64) f64) BuiltinError!*Expr {
+    if (args.items.len != 1) return BuiltinError.InvalidArgument;
+
+    if (args.items[0].* == .number) {
+        const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        result.* = .{ .number = f(args.items[0].number) };
+        return result;
+    }
+
+    var list: std.ArrayList(*Expr) = .empty;
+    const op = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    op.* = .{ .symbol = name };
+    list.append(env.allocator, op) catch return BuiltinError.OutOfMemory;
+    const copy = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    list.append(env.allocator, copy) catch return BuiltinError.OutOfMemory;
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
+fn absF(x: f64) f64 {
+    return @abs(x);
+}
+fn floorF(x: f64) f64 {
+    return @floor(x);
+}
+fn ceilF(x: f64) f64 {
+    return @ceil(x);
+}
+fn roundF(x: f64) f64 {
+    return @round(x);
+}
+fn signF(x: f64) f64 {
+    if (x > 0) return 1;
+    if (x < 0) return -1;
+    return 0;
+}
+
+pub fn builtin_abs(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (abs x) - absolute value; (abs (complex a b)) is the magnitude
+    if (args.items.len == 1) {
+        if (asComplex(args.items[0])) |c| {
+            const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .number = @sqrt(c.re * c.re + c.im * c.im) };
+            return result;
+        }
+    }
+    return unaryNumeric(args, env, "abs", absF);
+}
+
+pub fn builtin_floor(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    return unaryNumeric(args, env, "floor", floorF);
+}
+
+pub fn builtin_ceil(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    return unaryNumeric(args, env, "ceil", ceilF);
+}
+
+pub fn builtin_round(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    return unaryNumeric(args, env, "round", roundF);
+}
+
+pub fn builtin_sign(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    return unaryNumeric(args, env, "sign", signF);
+}
 
 pub fn builtin_add(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // If all arguments are numbers, compute the sum
@@ -27,9 +277,68 @@ pub fn builtin_add(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         }
     }
     if (all_numbers) {
+        if (std.math.isNan(sum)) return BuiltinError.Undefined;
         const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         result.* = .{ .number = sum };
         return result;
+    }
+
+    // Complex arithmetic: all args are numbers or (complex re im)
+    {
+        var all_complex = args.items.len > 0;
+        var acc = ComplexVal{ .re = 0, .im = 0 };
+        for (args.items) |arg| {
+            if (asComplex(arg)) |c| {
+                acc.re += c.re;
+                acc.im += c.im;
+            } else {
+                all_complex = false;
+                break;
+            }
+        }
+        if (all_complex) return makeComplexOrReal(env, acc.re, acc.im);
+    }
+
+    // Vector addition: all args vectors of equal length
+    if (args.items.len >= 2 and isVectorExpr(args.items[0])) {
+        var all_vectors = true;
+        for (args.items) |arg| {
+            if (!isVectorExpr(arg)) {
+                all_vectors = false;
+                break;
+            }
+        }
+        if (all_vectors) {
+            var acc = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+            for (args.items[1..]) |arg| {
+                const next = try vectorElementwise(env, "+", acc, arg);
+                acc.deinit(env.allocator);
+                env.allocator.destroy(acc);
+                acc = next;
+            }
+            return acc;
+        }
+    }
+
+    // Matrix addition: all args matrices of equal shape
+    if (args.items.len >= 2 and isMatrixExpr(args.items[0])) {
+        var all_matrices = true;
+        for (args.items) |arg| {
+            if (!isMatrixExpr(arg)) {
+                all_matrices = false;
+                break;
+            }
+        }
+        if (all_matrices) {
+            var acc = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+            for (args.items[1..]) |arg| {
+                const next = try matrixElementwise(env, "+", acc, arg);
+                acc.deinit(env.allocator);
+                env.allocator.destroy(acc);
+                acc = next;
+            }
+            return acc;
+        }
     }
 
     // Otherwise, create a symbolic expression (copy args since evaluator owns them)
@@ -49,6 +358,38 @@ pub fn builtin_add(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 pub fn builtin_subtract(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     if (args.items.len == 0) return BuiltinError.InvalidArgument;
 
+    // Unary minus: (- x) negates x
+    if (args.items.len == 1) {
+        const arg = args.items[0];
+        if (arg.* == .number) {
+            const expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            expr.* = .{ .number = -arg.number };
+            return expr;
+        }
+        if (asComplex(arg)) |c| {
+            return makeComplexOrReal(env, -c.re, -c.im);
+        }
+        if (isVectorExpr(arg) or isMatrixExpr(arg)) {
+            const neg_one = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            defer {
+                neg_one.deinit(env.allocator);
+                env.allocator.destroy(neg_one);
+            }
+            neg_one.* = .{ .number = -1 };
+            return scaleElementwise(env, arg, neg_one);
+        }
+        // Symbolic: keep as (- x)
+        var neg_list: std.ArrayList(*Expr) = .empty;
+        const neg_op = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        neg_op.* = .{ .symbol = "-" };
+        neg_list.append(env.allocator, neg_op) catch return BuiltinError.OutOfMemory;
+        const arg_copy = symbolic.copyExpr(arg, env.allocator) catch return BuiltinError.OutOfMemory;
+        neg_list.append(env.allocator, arg_copy) catch return BuiltinError.OutOfMemory;
+        const expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        expr.* = .{ .list = neg_list };
+        return expr;
+    }
+
     // If all arguments are numbers, compute the result
     var all_numbers = true;
     var result_val: f64 = if (args.items[0].* == .number) args.items[0].number else blk: {
@@ -63,9 +404,43 @@ pub fn builtin_subtract(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
         }
     }
     if (all_numbers) {
+        if (std.math.isNan(result_val)) return BuiltinError.Undefined;
         const expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         expr.* = .{ .number = result_val };
         return expr;
+    }
+
+    // Complex subtraction
+    {
+        var all_complex = true;
+        var acc: ?ComplexVal = null;
+        for (args.items) |arg| {
+            if (asComplex(arg)) |c| {
+                if (acc) |*a| {
+                    a.re -= c.re;
+                    a.im -= c.im;
+                } else {
+                    acc = c;
+                }
+            } else {
+                all_complex = false;
+                break;
+            }
+        }
+        if (all_complex) {
+            const a = acc.?;
+            return makeComplexOrReal(env, a.re, a.im);
+        }
+    }
+
+    // Vector subtraction
+    if (args.items.len == 2 and isVectorExpr(args.items[0]) and isVectorExpr(args.items[1])) {
+        return vectorElementwise(env, "-", args.items[0], args.items[1]);
+    }
+
+    // Matrix subtraction
+    if (args.items.len == 2 and isMatrixExpr(args.items[0]) and isMatrixExpr(args.items[1])) {
+        return matrixElementwise(env, "-", args.items[0], args.items[1]);
     }
 
     // Otherwise, create a symbolic expression (copy args since evaluator owns them)
@@ -95,9 +470,41 @@ pub fn builtin_multiply(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
         }
     }
     if (all_numbers) {
+        if (std.math.isNan(product)) return BuiltinError.Undefined;
         const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         result.* = .{ .number = product };
         return result;
+    }
+
+    // Complex multiplication: all args numbers or (complex re im)
+    {
+        var all_complex = args.items.len > 0;
+        var acc = ComplexVal{ .re = 1, .im = 0 };
+        for (args.items) |arg| {
+            if (asComplex(arg)) |c| {
+                const re = acc.re * c.re - acc.im * c.im;
+                const im = acc.re * c.im + acc.im * c.re;
+                acc = .{ .re = re, .im = im };
+            } else {
+                all_complex = false;
+                break;
+            }
+        }
+        if (all_complex) return makeComplexOrReal(env, acc.re, acc.im);
+    }
+
+    // Scalar * vector / scalar * matrix (either argument order)
+    if (args.items.len == 2) {
+        const a = args.items[0];
+        const b = args.items[1];
+        const a_container = isVectorExpr(a) or isMatrixExpr(a);
+        const b_container = isVectorExpr(b) or isMatrixExpr(b);
+        if (a_container and !b_container and b.* != .list) {
+            return scaleElementwise(env, a, b);
+        }
+        if (b_container and !a_container and a.* != .list) {
+            return scaleElementwise(env, b, a);
+        }
     }
 
     // Otherwise, create a symbolic expression (copy args since evaluator owns them)
@@ -117,6 +524,14 @@ pub fn builtin_multiply(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
 pub fn builtin_divide(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     if (args.items.len == 0) return BuiltinError.InvalidArgument;
 
+    // Unary form: (/ x) is the reciprocal 1/x
+    if (args.items.len == 1 and args.items[0].* == .number) {
+        if (args.items[0].number == 0) return BuiltinError.InvalidArgument;
+        const expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        expr.* = .{ .number = 1.0 / args.items[0].number };
+        return expr;
+    }
+
     // If all arguments are numbers, compute the result
     var all_numbers = true;
     var result_val: f64 = if (args.items[0].* == .number) args.items[0].number else blk: {
@@ -132,9 +547,38 @@ pub fn builtin_divide(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
         }
     }
     if (all_numbers) {
+        if (std.math.isNan(result_val)) return BuiltinError.Undefined;
         const expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         expr.* = .{ .number = result_val };
         return expr;
+    }
+
+    // Complex division
+    if (args.items.len == 2) {
+        if (asComplex(args.items[0])) |a| {
+            if (asComplex(args.items[1])) |b| {
+                const denom = b.re * b.re + b.im * b.im;
+                if (denom == 0) return BuiltinError.InvalidArgument;
+                return makeComplexOrReal(
+                    env,
+                    (a.re * b.re + a.im * b.im) / denom,
+                    (a.im * b.re - a.re * b.im) / denom,
+                );
+            }
+        }
+        // Vector / scalar and matrix / scalar
+        const a = args.items[0];
+        const b = args.items[1];
+        if ((isVectorExpr(a) or isMatrixExpr(a)) and b.* == .number) {
+            if (b.number == 0) return BuiltinError.InvalidArgument;
+            const recip = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            defer {
+                recip.deinit(env.allocator);
+                env.allocator.destroy(recip);
+            }
+            recip.* = .{ .number = 1.0 / b.number };
+            return scaleElementwise(env, a, recip);
+        }
     }
 
     // Otherwise, create a symbolic expression (copy args since evaluator owns them)
@@ -152,34 +596,74 @@ pub fn builtin_divide(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
 }
 
 pub fn builtin_eq(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (= a b) - returns 1 if equal, 0 if not
-    if (args.items.len != 2) return BuiltinError.InvalidArgument;
+    // (= a b ...) - returns 1 if all arguments are structurally equal
+    if (args.items.len < 2) return BuiltinError.InvalidArgument;
 
-    const equal = symbolic.exprEqual(args.items[0], args.items[1]);
+    var equal = true;
+    for (args.items[1..]) |arg| {
+        if (!symbolic.exprEqual(args.items[0], arg)) {
+            equal = false;
+            break;
+        }
+    }
 
     const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
     result.* = .{ .number = if (equal) 1 else 0 };
     return result;
 }
 
-pub fn builtin_lt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (< a b) - returns 1 if a < b, 0 otherwise (only for numbers)
-    if (args.items.len != 2) return BuiltinError.InvalidArgument;
-    if (args.items[0].* != .number or args.items[1].* != .number) return BuiltinError.InvalidArgument;
+/// Shared implementation for < and >: numeric chains evaluate to 0/1;
+/// symbolic arguments produce an inert symbolic comparison expression.
+fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, comptime less: bool) BuiltinError!*Expr {
+    if (args.items.len < 2) return BuiltinError.InvalidArgument;
 
+    var all_numbers = true;
+    for (args.items) |arg| {
+        if (arg.* != .number) {
+            all_numbers = false;
+            break;
+        }
+    }
+
+    if (all_numbers) {
+        var holds = true;
+        var i: usize = 0;
+        while (i + 1 < args.items.len) : (i += 1) {
+            const a = args.items[i].number;
+            const b = args.items[i + 1].number;
+            const ok = if (less) a < b else a > b;
+            if (!ok) {
+                holds = false;
+                break;
+            }
+        }
+        const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        result.* = .{ .number = if (holds) 1 else 0 };
+        return result;
+    }
+
+    // Symbolic comparison: keep the expression inert, e.g. (< x 1)
+    var list: std.ArrayList(*Expr) = .empty;
+    const op_expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    op_expr.* = .{ .symbol = op };
+    list.append(env.allocator, op_expr) catch return BuiltinError.OutOfMemory;
+    for (args.items) |arg| {
+        const copy = symbolic.copyExpr(arg, env.allocator) catch return BuiltinError.OutOfMemory;
+        list.append(env.allocator, copy) catch return BuiltinError.OutOfMemory;
+    }
     const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-    result.* = .{ .number = if (args.items[0].number < args.items[1].number) 1 else 0 };
+    result.* = .{ .list = list };
     return result;
 }
 
-pub fn builtin_gt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (> a b) - returns 1 if a > b, 0 otherwise (only for numbers)
-    if (args.items.len != 2) return BuiltinError.InvalidArgument;
-    if (args.items[0].* != .number or args.items[1].* != .number) return BuiltinError.InvalidArgument;
+pub fn builtin_lt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (< a b ...) - chained less-than; symbolic args stay symbolic
+    return comparisonChain(args, env, "<", true);
+}
 
-    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-    result.* = .{ .number = if (args.items[0].number > args.items[1].number) 1 else 0 };
-    return result;
+pub fn builtin_gt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (> a b ...) - chained greater-than; symbolic args stay symbolic
+    return comparisonChain(args, env, ">", false);
 }
 
 // ============================================================================
@@ -524,11 +1008,7 @@ pub fn builtin_permutations(args: std.ArrayList(*Expr), env: *Env) BuiltinError!
     if (n_f < 0 or k_f < 0 or n_f != @floor(n_f) or k_f != @floor(k_f)) {
         return BuiltinError.InvalidArgument;
     }
-    if (k_f > n_f) {
-        const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        result.* = .{ .number = 0 };
-        return result;
-    }
+    if (k_f > n_f) return BuiltinError.InvalidArgument;
 
     const n: u64 = @intFromFloat(n_f);
     const k: u64 = @intFromFloat(k_f);
@@ -595,6 +1075,11 @@ pub fn builtin_factorize(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Ex
 
     var n: u64 = @intFromFloat(n_f);
     var result_list: std.ArrayList(*Expr) = .empty;
+
+    // Tag the result: (factors (p e) ...)
+    const factors_sym = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    factors_sym.* = .{ .symbol = "factors" };
+    result_list.append(env.allocator, factors_sym) catch return BuiltinError.OutOfMemory;
 
     // Factor out 2s
     var count: u64 = 0;
@@ -1397,13 +1882,34 @@ pub fn builtin_assume(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
         assumption.integer = true;
         assumption.real = true;
     } else {
-        return BuiltinError.InvalidArgument;
+        // Unknown property: return a helpful message instead of a bare error
+        const msg = std.fmt.allocPrint(
+            env.allocator,
+            "unknown property '{s}' (valid: positive negative nonzero integer real even odd)",
+            .{prop_name},
+        ) catch return BuiltinError.OutOfMemory;
+        const result = env.allocator.create(Expr) catch {
+            env.allocator.free(msg);
+            return BuiltinError.OutOfMemory;
+        };
+        result.* = .{ .owned_symbol = msg };
+        return result;
     }
 
     env.assume(sym_name, assumption) catch return BuiltinError.OutOfMemory;
 
-    // Return the symbol
-    return symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    // Return a confirmation, e.g. (assumed x positive)
+    var list: std.ArrayList(*Expr) = .empty;
+    const head = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    head.* = .{ .symbol = "assumed" };
+    list.append(env.allocator, head) catch return BuiltinError.OutOfMemory;
+    const sym_copy = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    list.append(env.allocator, sym_copy) catch return BuiltinError.OutOfMemory;
+    const prop_copy = symbolic.copyExpr(args.items[1], env.allocator) catch return BuiltinError.OutOfMemory;
+    list.append(env.allocator, prop_copy) catch return BuiltinError.OutOfMemory;
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
 }
 
 pub fn builtin_is(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -1450,10 +1956,40 @@ pub fn builtin_power(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     if (args.items[0].* == .number and args.items[1].* == .number) {
         const base = args.items[0].number;
         const exp = args.items[1].number;
+        // Negative base with non-integer exponent: return the principal
+        // complex value instead of NaN
+        if (base < 0 and exp != @floor(exp)) {
+            const r = std.math.pow(f64, -base, exp);
+            const theta = std.math.pi * exp;
+            return makeComplexOrReal(env, r * @cos(theta), r * @sin(theta));
+        }
         const result_val = std.math.pow(f64, base, exp);
+        if (std.math.isNan(result_val)) return BuiltinError.Undefined;
         const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         result.* = .{ .number = result_val };
         return result;
+    }
+
+    // Complex base with numeric exponent: principal value via polar form
+    if (args.items[1].* == .number) {
+        if (asComplex(args.items[0])) |c| {
+            const exp = args.items[1].number;
+            const r = @sqrt(c.re * c.re + c.im * c.im);
+            if (r == 0) {
+                if (exp <= 0) return BuiltinError.InvalidArgument;
+                const zero = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+                zero.* = .{ .number = 0 };
+                return zero;
+            }
+            const theta = std.math.atan2(c.im, c.re);
+            const new_r = std.math.pow(f64, r, exp);
+            const new_theta = theta * exp;
+            var re = new_r * @cos(new_theta);
+            var im = new_r * @sin(new_theta);
+            if (@abs(re) < 1e-12) re = 0;
+            if (@abs(im) < 1e-12) im = 0;
+            return makeComplexOrReal(env, re, im);
+        }
     }
 
     // Otherwise, create a symbolic expression (copy args since evaluator owns them)
@@ -1472,14 +2008,72 @@ pub fn builtin_power(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 
 pub fn builtin_simplify(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     if (args.items.len != 1) return BuiltinError.InvalidArgument;
-    return symbolic.simplify(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    const simplified = symbolic.simplify(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    // Assumption-aware pass: sqrt(x^2) -> x when x is assumed positive
+    const with_assumptions = applyAssumptionRules(simplified, env) catch {
+        return simplified;
+    };
+    simplified.deinit(env.allocator);
+    env.allocator.destroy(simplified);
+    return with_assumptions;
+}
+
+/// Rewrites (^ (^ x 2) 0.5) (and sqrt-of-even-power forms) to x when the
+/// symbol x carries a `positive` assumption in the environment.
+fn applyAssumptionRules(expr: *const Expr, env: *Env) BuiltinError!*Expr {
+    switch (expr.*) {
+        .number, .symbol, .owned_symbol, .lambda => {
+            return symbolic.copyExpr(expr, env.allocator) catch return BuiltinError.OutOfMemory;
+        },
+        .list => |lst| {
+            // Match (^ (^ sym 2) 0.5)
+            if (lst.items.len == 3 and lst.items[0].* == .symbol and
+                std.mem.eql(u8, lst.items[0].symbol, "^") and
+                lst.items[2].* == .number and lst.items[2].number == 0.5)
+            {
+                const inner = lst.items[1];
+                if (inner.* == .list and inner.list.items.len == 3 and
+                    inner.list.items[0].* == .symbol and std.mem.eql(u8, inner.list.items[0].symbol, "^") and
+                    inner.list.items[2].* == .number and inner.list.items[2].number == 2 and
+                    inner.list.items[1].* == .symbol)
+                {
+                    const sym = inner.list.items[1].symbol;
+                    if (env.isPositive(sym)) {
+                        return symbolic.copyExpr(inner.list.items[1], env.allocator) catch return BuiltinError.OutOfMemory;
+                    }
+                }
+            }
+
+            var new_list: std.ArrayList(*Expr) = .empty;
+            errdefer {
+                for (new_list.items) |item| {
+                    item.deinit(env.allocator);
+                    env.allocator.destroy(item);
+                }
+                new_list.deinit(env.allocator);
+            }
+            for (lst.items) |item| {
+                const processed = try applyAssumptionRules(item, env);
+                new_list.append(env.allocator, processed) catch return BuiltinError.OutOfMemory;
+            }
+            const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .list = new_list };
+            return result;
+        },
+    }
 }
 
 pub fn builtin_evalf(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (evalf expr) or (N expr) - numerically evaluate expression
-    // Replaces symbolic constants (pi, e, inf) with their numeric values
+    // Replaces symbolic constants (pi, e, inf) with their numeric values,
+    // then re-evaluates so complex/vector arithmetic also folds numerically.
     if (args.items.len != 1) return BuiltinError.InvalidArgument;
-    return evalfExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    const substituted = evalfExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    defer {
+        substituted.deinit(env.allocator);
+        env.allocator.destroy(substituted);
+    }
+    return eval(substituted, env) catch return BuiltinError.EvaluationError;
 }
 
 fn evalfExpr(expr: *const Expr, allocator: std.mem.Allocator) BuiltinError!*Expr {
@@ -1551,7 +2145,10 @@ fn evalfExpr(expr: *const Expr, allocator: std.mem.Allocator) BuiltinError!*Expr
                         const x = new_list.items[1].number;
                         var result_val: ?f64 = null;
 
-                        if (std.mem.eql(u8, op, "sin")) {
+                        if (std.mem.eql(u8, op, "-")) {
+                            // Unary minus
+                            result_val = -x;
+                        } else if (std.mem.eql(u8, op, "sin")) {
                             result_val = @sin(x);
                         } else if (std.mem.eql(u8, op, "cos")) {
                             result_val = @cos(x);
@@ -1730,6 +2327,23 @@ pub fn builtin_integrate(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Ex
     };
     diff.deinit(env.allocator);
     env.allocator.destroy(diff);
+
+    // Symbolic bounds like pi leave residues such as (cos pi): fold them
+    // numerically so definite integrals return a value
+    if (result.* != .number) {
+        const numeric = evalfExpr(result, env.allocator) catch return BuiltinError.OutOfMemory;
+        if (numeric.* == .number) {
+            result.deinit(env.allocator);
+            env.allocator.destroy(result);
+            // Snap float noise from constant folding (e.g. cos pi)
+            if (@abs(numeric.number - @round(numeric.number)) < 1e-9) {
+                numeric.number = @round(numeric.number);
+            }
+            return numeric;
+        }
+        numeric.deinit(env.allocator);
+        env.allocator.destroy(numeric);
+    }
 
     return result;
 }
@@ -2554,6 +3168,17 @@ pub fn builtin_exp(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         return result;
     }
 
+    // Complex argument: e^(a+bi) = e^a (cos b + i sin b)
+    if (asComplex(args.items[0])) |c| {
+        const mag = @exp(c.re);
+        var re = mag * @cos(c.im);
+        var im = mag * @sin(c.im);
+        // Snap float noise (e.g. exp(i*pi)) to exact values
+        if (@abs(re) < 1e-12) re = 0;
+        if (@abs(im) < 1e-12) im = 0;
+        return makeComplexOrReal(env, re, im);
+    }
+
     // Otherwise, create a symbolic expression
     var list: std.ArrayList(*Expr) = .empty;
     const op = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -2613,10 +3238,10 @@ pub fn builtin_log(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         result.* = .{ .list = list };
         return result;
     } else if (args.items.len == 2) {
-        // log(base, value)
+        // (log value base): logarithm of value in the given base
         if (args.items[0].* == .number and args.items[1].* == .number) {
-            const base = args.items[0].number;
-            const val = args.items[1].number;
+            const val = args.items[0].number;
+            const base = args.items[1].number;
             if (val <= 0 or base <= 0 or base == 1) return BuiltinError.InvalidArgument;
             const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
             result.* = .{ .number = @log(val) / @log(base) };
@@ -2643,13 +3268,20 @@ pub fn builtin_log(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 pub fn builtin_sqrt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     if (args.items.len != 1) return BuiltinError.InvalidArgument;
 
-    // If argument is a number, compute sqrt
+    // If argument is a number, compute sqrt (negative -> imaginary result)
     if (args.items[0].* == .number) {
         const val = args.items[0].number;
-        if (val < 0) return BuiltinError.InvalidArgument;
+        if (val < 0) {
+            return makeComplexOrReal(env, 0, @sqrt(-val));
+        }
         const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         result.* = .{ .number = @sqrt(val) };
         return result;
+    }
+
+    // Complex argument: principal square root
+    if (asComplex(args.items[0])) |c| {
+        return symbolic.complexSqrt(c.re, c.im, env.allocator) catch return BuiltinError.OutOfMemory;
     }
 
     // Otherwise, create (^ x 0.5) for symbolic sqrt
@@ -2693,7 +3325,10 @@ pub fn builtin_taylor(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     }
     const order: usize = @intFromFloat(order_f);
 
-    return symbolic.taylor(args.items[0], args.items[1].symbol, args.items[2].number, order, env.allocator) catch return BuiltinError.OutOfMemory;
+    return symbolic.taylor(args.items[0], args.items[1].symbol, args.items[2].number, order, env.allocator) catch |err| switch (err) {
+        error.Undefined => return BuiltinError.Undefined,
+        else => return BuiltinError.OutOfMemory,
+    };
 }
 
 pub fn builtin_solve(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -2735,10 +3370,24 @@ pub fn builtin_collect(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr
 pub fn builtin_complex(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (complex real imag) - creates a complex number
     if (args.items.len != 2) return BuiltinError.InvalidArgument;
-    if (args.items[0].* != .number) return BuiltinError.InvalidArgument;
-    if (args.items[1].* != .number) return BuiltinError.InvalidArgument;
 
-    return symbolic.makeComplex(env.allocator, args.items[0].number, args.items[1].number) catch return BuiltinError.OutOfMemory;
+    if (args.items[0].* == .number and args.items[1].* == .number) {
+        return symbolic.makeComplex(env.allocator, args.items[0].number, args.items[1].number) catch return BuiltinError.OutOfMemory;
+    }
+
+    // Symbolic parts (e.g. (complex 0 pi)) stay inert so evalf can resolve
+    // them later
+    var list: std.ArrayList(*Expr) = .empty;
+    const op = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    op.* = .{ .symbol = "complex" };
+    list.append(env.allocator, op) catch return BuiltinError.OutOfMemory;
+    for (args.items) |arg| {
+        const copy = symbolic.copyExpr(arg, env.allocator) catch return BuiltinError.OutOfMemory;
+        list.append(env.allocator, copy) catch return BuiltinError.OutOfMemory;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
 }
 
 pub fn builtin_real(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -2805,9 +3454,16 @@ pub fn builtin_limit(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (limit expr var point) - computes limit of expr as var -> point
     if (args.items.len != 3) return BuiltinError.InvalidArgument;
     if (args.items[1].* != .symbol) return BuiltinError.InvalidArgument;
-    if (args.items[2].* != .number) return BuiltinError.InvalidArgument;
 
-    return symbolic.limit(args.items[0], args.items[1].symbol, args.items[2].number, env.allocator) catch return BuiltinError.OutOfMemory;
+    // Resolve symbolic points like (/ pi 2) or inf numerically
+    const point_expr = evalfExpr(args.items[2], env.allocator) catch return BuiltinError.OutOfMemory;
+    defer {
+        point_expr.deinit(env.allocator);
+        env.allocator.destroy(point_expr);
+    }
+    if (point_expr.* != .number) return BuiltinError.InvalidArgument;
+
+    return symbolic.limit(args.items[0], args.items[1].symbol, point_expr.number, env.allocator) catch return BuiltinError.OutOfMemory;
 }
 
 pub fn builtin_rule(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -3113,6 +3769,106 @@ pub fn builtin_trace(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     return result;
 }
 
+/// Symbolic eigenvalues of a 2x2 matrix [[a,b],[c,d]]:
+/// (trace +- sqrt(trace^2 - 4 det)) / 2, each simplified.
+fn symbolicEigenvalues2x2(a: *const Expr, b: *const Expr, c: *const Expr, d: *const Expr, env: *Env) BuiltinError!*Expr {
+    const allocator = env.allocator;
+
+    const trace = try simplifiedBinOp(env, "+", a, d);
+    defer {
+        trace.deinit(allocator);
+        allocator.destroy(trace);
+    }
+    const ad = try simplifiedBinOp(env, "*", a, d);
+    defer {
+        ad.deinit(allocator);
+        allocator.destroy(ad);
+    }
+    const bc = try simplifiedBinOp(env, "*", b, c);
+    defer {
+        bc.deinit(allocator);
+        allocator.destroy(bc);
+    }
+    const det = try simplifiedBinOp(env, "-", ad, bc);
+    defer {
+        det.deinit(allocator);
+        allocator.destroy(det);
+    }
+
+    // disc = trace^2 - 4*det
+    const two = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    two.* = .{ .number = 2 };
+    defer {
+        two.deinit(allocator);
+        allocator.destroy(two);
+    }
+    const four = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    four.* = .{ .number = 4 };
+    defer {
+        four.deinit(allocator);
+        allocator.destroy(four);
+    }
+    const half = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    half.* = .{ .number = 0.5 };
+    defer {
+        half.deinit(allocator);
+        allocator.destroy(half);
+    }
+
+    const trace_sq = try simplifiedBinOp(env, "^", trace, two);
+    defer {
+        trace_sq.deinit(allocator);
+        allocator.destroy(trace_sq);
+    }
+    const four_det = try simplifiedBinOp(env, "*", four, det);
+    defer {
+        four_det.deinit(allocator);
+        allocator.destroy(four_det);
+    }
+    const disc = try simplifiedBinOp(env, "-", trace_sq, four_det);
+    defer {
+        disc.deinit(allocator);
+        allocator.destroy(disc);
+    }
+    const sqrt_disc = try simplifiedBinOp(env, "^", disc, half);
+    defer {
+        sqrt_disc.deinit(allocator);
+        allocator.destroy(sqrt_disc);
+    }
+
+    const sum_expr = try simplifiedBinOp(env, "+", trace, sqrt_disc);
+    defer {
+        sum_expr.deinit(allocator);
+        allocator.destroy(sum_expr);
+    }
+    const diff_expr = try simplifiedBinOp(env, "-", trace, sqrt_disc);
+    defer {
+        diff_expr.deinit(allocator);
+        allocator.destroy(diff_expr);
+    }
+    const lambda1 = try simplifiedBinOp(env, "/", sum_expr, two);
+    errdefer {
+        lambda1.deinit(allocator);
+        allocator.destroy(lambda1);
+    }
+    const lambda2 = try simplifiedBinOp(env, "/", diff_expr, two);
+    errdefer {
+        lambda2.deinit(allocator);
+        allocator.destroy(lambda2);
+    }
+
+    var list: std.ArrayList(*Expr) = .empty;
+    const op = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    op.* = .{ .symbol = "eigenvalues" };
+    list.append(allocator, op) catch return BuiltinError.OutOfMemory;
+    list.append(allocator, lambda1) catch return BuiltinError.OutOfMemory;
+    list.append(allocator, lambda2) catch return BuiltinError.OutOfMemory;
+
+    const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
 pub fn builtin_eigenvalues(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (eigenvalues M) - eigenvalues of 2x2 matrix M
     // For [[a,b],[c,d]], eigenvalues are roots of λ² - (a+d)λ + (ad-bc) = 0
@@ -3130,9 +3886,10 @@ pub fn builtin_eigenvalues(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     const c = rows[1].list.items[0];
     const d = rows[1].list.items[1];
 
-    // Check if all are numbers
+    // Symbolic entries: eigenvalues via the quadratic formula on the
+    // characteristic polynomial: lambda = (tr +- sqrt(tr^2 - 4 det)) / 2
     if (a.* != .number or b.* != .number or c.* != .number or d.* != .number) {
-        return BuiltinError.InvalidArgument;
+        return symbolicEigenvalues2x2(a, b, c, d, env);
     }
 
     const av = a.number;
@@ -3477,6 +4234,13 @@ pub fn builtin_inv(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         const det = symbolic.simplify(det_expr, env.allocator) catch return BuiltinError.OutOfMemory;
         det_expr.deinit(env.allocator);
         env.allocator.destroy(det_expr);
+
+        // Singular matrix (det = 0) has no inverse
+        if (det.* == .number and det.number == 0) {
+            det.deinit(env.allocator);
+            env.allocator.destroy(det);
+            return BuiltinError.InvalidArgument;
+        }
 
         // Build adjugate: [[d, -b], [-c, a]]
         // Entry (1,1): d/det
@@ -4341,9 +5105,14 @@ fn getGfComponents(expr: *const Expr) ?struct { value: i64, p: i64 } {
     if (!isGfElement(expr)) return null;
     if (expr.list.items[1].* != .number) return null;
     if (expr.list.items[2].* != .number) return null;
+    const v = expr.list.items[1].number;
+    const p = expr.list.items[2].number;
+    // Reject non-integers and out-of-range values (no unchecked casts)
+    if (v != @floor(v) or p != @floor(p)) return null;
+    if (@abs(v) > 9.0e15 or @abs(p) > 9.0e15) return null;
     return .{
-        .value = @intFromFloat(expr.list.items[1].number),
-        .p = @intFromFloat(expr.list.items[2].number),
+        .value = @intFromFloat(v),
+        .p = @intFromFloat(p),
     };
 }
 
@@ -4372,15 +5141,22 @@ fn makeGfElement(allocator: std.mem.Allocator, value: i64, p: i64) BuiltinError!
 }
 
 pub fn builtin_gf(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (gf value p) - creates element in GF(p)
+    // (gf value p) - creates element in GF(p); p must be a prime
     if (args.items.len != 2) return BuiltinError.InvalidArgument;
     if (args.items[0].* != .number) return BuiltinError.InvalidArgument;
     if (args.items[1].* != .number) return BuiltinError.InvalidArgument;
+
+    // Both value and modulus must be integers (no silent truncation)
+    if (args.items[0].number != @floor(args.items[0].number)) return BuiltinError.InvalidArgument;
+    if (args.items[1].number != @floor(args.items[1].number)) return BuiltinError.InvalidArgument;
+    if (@abs(args.items[0].number) > 9.0e15 or args.items[1].number > 9.0e15) return BuiltinError.InvalidArgument;
 
     const value: i64 = @intFromFloat(args.items[0].number);
     const p: i64 = @intFromFloat(args.items[1].number);
 
     if (p <= 1) return BuiltinError.InvalidArgument; // p must be > 1
+    // GF(p) is only a field for prime p
+    if (!isPrime(@intCast(p))) return BuiltinError.InvalidArgument;
 
     return makeGfElement(env.allocator, value, p);
 }
@@ -4887,10 +5663,15 @@ fn exprToLatex(expr: *const Expr, buf: *std.ArrayList(u8), allocator: std.mem.Al
     switch (expr.*) {
         .number => |n| {
             // Format number, removing trailing zeros for integers
+            // (range-checked so huge floats can't crash the conversion)
             var num_buf: [64]u8 = undefined;
-            const n_int: i64 = @intFromFloat(n);
-            if (@as(f64, @floatFromInt(n_int)) == n) {
+            if (n == @floor(n) and @abs(n) < 1e15) {
+                const n_int: i64 = @intFromFloat(n);
                 const formatted = std.fmt.bufPrint(&num_buf, "{d}", .{n_int}) catch return error.OutOfMemory;
+                buf.appendSlice(allocator, formatted) catch return error.OutOfMemory;
+            } else if (@abs(n) >= 1e15) {
+                // Scientific notation for very large magnitudes
+                const formatted = std.fmt.bufPrint(&num_buf, "{e}", .{n}) catch return error.OutOfMemory;
                 buf.appendSlice(allocator, formatted) catch return error.OutOfMemory;
             } else {
                 const formatted = std.fmt.bufPrint(&num_buf, "{d}", .{n}) catch return error.OutOfMemory;
@@ -4915,8 +5696,15 @@ fn exprToLatex(expr: *const Expr, buf: *std.ArrayList(u8), allocator: std.mem.Al
                 buf.appendSlice(allocator, "}") catch return error.OutOfMemory;
             }
         },
-        .lambda => {
-            buf.appendSlice(allocator, "\\lambda") catch return error.OutOfMemory;
+        .lambda => |lam| {
+            // Render as \lambda x, y . body
+            buf.appendSlice(allocator, "\\lambda ") catch return error.OutOfMemory;
+            for (lam.params.items, 0..) |param, i| {
+                if (i > 0) buf.appendSlice(allocator, ", ") catch return error.OutOfMemory;
+                buf.appendSlice(allocator, param) catch return error.OutOfMemory;
+            }
+            buf.appendSlice(allocator, " . ") catch return error.OutOfMemory;
+            try exprToLatex(lam.body, buf, allocator);
         },
         .list => |lst| {
             if (lst.items.len == 0) {
@@ -4966,10 +5754,17 @@ fn exprToLatex(expr: *const Expr, buf: *std.ArrayList(u8), allocator: std.mem.Al
                     }
                 } else if (std.mem.eql(u8, op_name, "^")) {
                     if (lst.items.len == 3) {
-                        try wrapIfNeeded(lst.items[1], buf, allocator);
-                        buf.appendSlice(allocator, "^{") catch return error.OutOfMemory;
-                        try exprToLatex(lst.items[2], buf, allocator);
-                        buf.appendSlice(allocator, "}") catch return error.OutOfMemory;
+                        // x^{0.5} renders as \sqrt{x}
+                        if (lst.items[2].* == .number and lst.items[2].number == 0.5) {
+                            buf.appendSlice(allocator, "\\sqrt{") catch return error.OutOfMemory;
+                            try exprToLatex(lst.items[1], buf, allocator);
+                            buf.appendSlice(allocator, "}") catch return error.OutOfMemory;
+                        } else {
+                            try wrapIfNeeded(lst.items[1], buf, allocator);
+                            buf.appendSlice(allocator, "^{") catch return error.OutOfMemory;
+                            try exprToLatex(lst.items[2], buf, allocator);
+                            buf.appendSlice(allocator, "}") catch return error.OutOfMemory;
+                        }
                     }
                 }
                 // Functions
@@ -5022,7 +5817,7 @@ fn exprToLatex(expr: *const Expr, buf: *std.ArrayList(u8), allocator: std.mem.Al
                     }
                 }
                 // Integral
-                else if (std.mem.eql(u8, op_name, "integrate")) {
+                else if (std.mem.eql(u8, op_name, "integrate") or std.mem.eql(u8, op_name, "integral")) {
                     buf.appendSlice(allocator, "\\int ") catch return error.OutOfMemory;
                     if (lst.items.len > 1) try exprToLatex(lst.items[1], buf, allocator);
                     buf.appendSlice(allocator, " \\, d") catch return error.OutOfMemory;
@@ -5104,10 +5899,13 @@ pub fn builtin_dsolve(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     const y_name = if (y_var.* == .symbol) y_var.symbol else y_var.owned_symbol;
     const x_name = if (x_var.* == .symbol) x_var.symbol else x_var.owned_symbol;
 
-    // Check if it's an equation (= lhs rhs)
+    // Check if it's an equation (= lhs rhs), or the residual form
+    // (- (diff y x) rhs) meaning dy/dx - rhs = 0
     if (ode.* == .list and ode.list.items.len == 3) {
         const op = ode.list.items[0];
-        if (op.* == .symbol and std.mem.eql(u8, op.symbol, "=")) {
+        if (op.* == .symbol and
+            (std.mem.eql(u8, op.symbol, "=") or std.mem.eql(u8, op.symbol, "-")))
+        {
             const lhs = ode.list.items[1];
             const rhs = ode.list.items[2];
 
@@ -5301,8 +6099,10 @@ fn solveSeparable(fx: *const Expr, gy: *const Expr, y_name: []const u8, x_name: 
     rhs_expr.* = .{ .list = rhs_plus_c };
 
     // Simplify both sides
-    const lhs_simp = symbolic.simplify(symbolic.copyExpr(lhs_int, allocator) catch return BuiltinError.OutOfMemory, allocator) catch return BuiltinError.OutOfMemory;
+    const lhs_simp = symbolic.simplify(lhs_int, allocator) catch return BuiltinError.OutOfMemory;
     const rhs_simp = symbolic.simplify(rhs_expr, allocator) catch return BuiltinError.OutOfMemory;
+    rhs_expr.deinit(allocator);
+    allocator.destroy(rhs_expr);
 
     // Build final equation
     var eq_list: std.ArrayList(*Expr) = .empty;
@@ -5346,8 +6146,10 @@ fn solveSeparableDiv(fx: *const Expr, hy: *const Expr, y_name: []const u8, x_nam
     rhs_expr.* = .{ .list = rhs_plus_c };
 
     // Simplify
-    const lhs_simp = symbolic.simplify(symbolic.copyExpr(lhs_int, allocator) catch return BuiltinError.OutOfMemory, allocator) catch return BuiltinError.OutOfMemory;
+    const lhs_simp = symbolic.simplify(lhs_int, allocator) catch return BuiltinError.OutOfMemory;
     const rhs_simp = symbolic.simplify(rhs_expr, allocator) catch return BuiltinError.OutOfMemory;
+    rhs_expr.deinit(allocator);
+    allocator.destroy(rhs_expr);
 
     var eq_list: std.ArrayList(*Expr) = .empty;
     const eq_op = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -5488,6 +6290,8 @@ fn solveLinearHomogeneous(a_coeff: ?*const Expr, y_name: []const u8, x_name: []c
 
     // Simplify
     const simplified = symbolic.simplify(solution, allocator) catch return BuiltinError.OutOfMemory;
+    solution.deinit(allocator);
+    allocator.destroy(solution);
 
     return createEquation(y_name, simplified, env);
 }
@@ -5585,6 +6389,8 @@ fn solveLinearNonhomogeneous(a_coeff: *const Expr, fx: *const Expr, y_name: []co
 
     // Simplify
     const simplified = symbolic.simplify(solution, allocator) catch return BuiltinError.OutOfMemory;
+    solution.deinit(allocator);
+    allocator.destroy(solution);
 
     return createEquation(y_name, simplified, env);
 }
@@ -5652,6 +6458,14 @@ fn createSymbolicResult(rhs: *const Expr, y_name: []const u8, x_name: []const u8
 // Fourier Series
 // ============================================================================
 
+/// Numerical quadrature leaves noise like 2.0000001732; snap coefficients
+/// that are within 1e-4 of an integer to that integer.
+fn snapCoefficient(x: f64) f64 {
+    const rounded = @round(x);
+    if (@abs(x - rounded) < 1e-4) return rounded;
+    return x;
+}
+
 pub fn builtin_fourier(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (fourier expr var n) - compute n-term Fourier series of expr on [-pi, pi]
     // (fourier expr var n L) - compute on [-L, L]
@@ -5699,7 +6513,7 @@ pub fn builtin_fourier(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr
         return createSymbolicFourier(expr_arg, var_arg, n, L, env);
     };
     const a0_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-    a0_expr.* = .{ .number = a0_val };
+    a0_expr.* = .{ .number = snapCoefficient(a0_val) };
     result_list.append(allocator, a0_expr) catch return BuiltinError.OutOfMemory;
 
     // Compute coefficients list
@@ -5711,13 +6525,13 @@ pub fn builtin_fourier(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr
         // Compute a_n = (1/L) * integral from -L to L of f(x)*cos(n*pi*x/L) dx
         const an_val = computeFourierAn(expr_arg, var_name, @intCast(i), L, allocator, env) catch 0;
         const an_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        an_expr.* = .{ .number = an_val };
+        an_expr.* = .{ .number = snapCoefficient(an_val) };
         pair.append(allocator, an_expr) catch return BuiltinError.OutOfMemory;
 
         // Compute b_n = (1/L) * integral from -L to L of f(x)*sin(n*pi*x/L) dx
         const bn_val = computeFourierBn(expr_arg, var_name, @intCast(i), L, allocator, env) catch 0;
         const bn_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        bn_expr.* = .{ .number = bn_val };
+        bn_expr.* = .{ .number = snapCoefficient(bn_val) };
         pair.append(allocator, bn_expr) catch return BuiltinError.OutOfMemory;
 
         const pair_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -5850,7 +6664,17 @@ fn createSymbolicFourier(expr: *const Expr, var_arg: *const Expr, n: usize, L: f
 // ============================================================================
 
 pub fn builtin_laplace(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (laplace expr t s) - compute Laplace transform of expr from t-domain to s-domain
+    // (laplace expr t s) - Laplace transform; result is simplified so
+    // constant subexpressions like (^ 2 2) fold
+    const raw = try laplaceImpl(args, env);
+    defer {
+        raw.deinit(env.allocator);
+        env.allocator.destroy(raw);
+    }
+    return symbolic.simplify(raw, env.allocator) catch return BuiltinError.OutOfMemory;
+}
+
+fn laplaceImpl(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // L{f(t)} = integral from 0 to inf of f(t)*e^(-st) dt
     if (args.items.len < 3) return BuiltinError.InvalidArgument;
 
@@ -6673,7 +7497,16 @@ pub fn builtin_newton_interp(args: std.ArrayList(*Expr), env: *Env) BuiltinError
     const poly = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
     poly.* = .{ .list = terms };
 
-    return poly;
+    // Simplify away (- x 0) and zero terms
+    const simplified = symbolic.simplify(poly, allocator) catch {
+        poly.deinit(allocator);
+        allocator.destroy(poly);
+        return BuiltinError.OutOfMemory;
+    };
+    poly.deinit(allocator);
+    allocator.destroy(poly);
+
+    return simplified;
 }
 
 // ============================================================================
@@ -6796,24 +7629,9 @@ pub fn builtin_bisection(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Ex
     var fa = evaluateAt(expr_arg, var_name, a, allocator, env) catch return BuiltinError.InvalidArgument;
     const fb = evaluateAt(expr_arg, var_name, b, allocator, env) catch return BuiltinError.InvalidArgument;
 
-    // Check for sign change
+    // Check for sign change: without one, bisection cannot bracket a root
     if (fa * fb > 0) {
-        // No sign change, return symbolic
-        var list: std.ArrayList(*Expr) = .empty;
-        const op = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        op.* = .{ .symbol = "bisection" };
-        list.append(allocator, op) catch return BuiltinError.OutOfMemory;
-        const expr_copy = symbolic.copyExpr(expr_arg, allocator) catch return BuiltinError.OutOfMemory;
-        list.append(allocator, expr_copy) catch return BuiltinError.OutOfMemory;
-        const var_copy = symbolic.copyExpr(var_arg, allocator) catch return BuiltinError.OutOfMemory;
-        list.append(allocator, var_copy) catch return BuiltinError.OutOfMemory;
-        const a_copy = symbolic.copyExpr(a_arg, allocator) catch return BuiltinError.OutOfMemory;
-        list.append(allocator, a_copy) catch return BuiltinError.OutOfMemory;
-        const b_copy = symbolic.copyExpr(b_arg, allocator) catch return BuiltinError.OutOfMemory;
-        list.append(allocator, b_copy) catch return BuiltinError.OutOfMemory;
-        const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        result.* = .{ .list = list };
-        return result;
+        return BuiltinError.InvalidArgument;
     }
 
     // Bisection iteration
@@ -7007,11 +7825,20 @@ pub fn builtin_cf_rational(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     const q_arg = args.items[1];
 
     if (p_arg.* != .number or q_arg.* != .number) return BuiltinError.InvalidArgument;
+    if (p_arg.number != @floor(p_arg.number) or q_arg.number != @floor(q_arg.number)) return BuiltinError.InvalidArgument;
+    if (@abs(p_arg.number) > 9.0e15 or @abs(q_arg.number) > 9.0e15) return BuiltinError.InvalidArgument;
 
     var p: i64 = @intFromFloat(p_arg.number);
     var q: i64 = @intFromFloat(q_arg.number);
 
     if (q == 0) return BuiltinError.InvalidArgument;
+
+    // Normalize so the denominator is positive (p/-q == -p/q); the
+    // floor-based Euclidean loop below requires q > 0.
+    if (q < 0) {
+        p = -p;
+        q = -q;
+    }
 
     const allocator = env.allocator;
 
@@ -7021,8 +7848,9 @@ pub fn builtin_cf_rational(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     terms.append(allocator, cf_sym) catch return BuiltinError.OutOfMemory;
 
     // Euclidean algorithm to get continued fraction coefficients
+    // (floor division so negative rationals get canonical form)
     while (q != 0) {
-        const a = @divTrunc(p, q);
+        const a = @divFloor(p, q);
         const a_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         a_expr.* = .{ .number = @floatFromInt(a) };
         terms.append(allocator, a_expr) catch return BuiltinError.OutOfMemory;
@@ -7222,7 +8050,6 @@ pub fn builtin_nth(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     if (lst.* != .list or n_arg.* != .number) return BuiltinError.InvalidArgument;
 
     const items = lst.list.items;
-    const n: usize = @intFromFloat(n_arg.number);
 
     // Account for tagged lists
     const start_idx: usize = if (items.len > 0 and items[0].* == .symbol and
@@ -7233,7 +8060,7 @@ pub fn builtin_nth(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     else
         0;
 
-    if (start_idx + n >= items.len) return BuiltinError.InvalidArgument;
+    const n = floatToIndex(n_arg.number, items.len - start_idx) orelse return BuiltinError.InvalidArgument;
 
     return symbolic.copyExpr(items[start_idx + n], env.allocator) catch return BuiltinError.OutOfMemory;
 }
@@ -7615,6 +8442,22 @@ pub fn builtin_memoize(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr
     memo_cache.?.put(key, copy) catch return BuiltinError.OutOfMemory;
 
     return evaluated;
+}
+
+/// Frees the global memoization cache. Called on environment teardown so
+/// memoized results don't leak at process exit.
+pub fn deinitMemoCache() void {
+    if (memo_cache) |*cache| {
+        const allocator = cache.allocator;
+        var iter = cache.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit(allocator);
+            allocator.destroy(entry.value_ptr.*);
+        }
+        cache.deinit();
+        memo_cache = null;
+    }
 }
 
 pub fn builtin_memo_clear(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {

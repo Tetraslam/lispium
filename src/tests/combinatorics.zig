@@ -336,7 +336,7 @@ test "factorize 12" {
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
     // 12 = 2^2 * 3^1
-    try testing.expectEqualStrings("((2 2) (3 1))", str);
+    try testing.expectEqualStrings("(factors (2 2) (3 1))", str);
 }
 
 test "factorize prime 13" {
@@ -358,7 +358,7 @@ test "factorize prime 13" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("((13 1))", str);
+    try testing.expectEqualStrings("(factors (13 1))", str);
 }
 
 test "factorize 360" {
@@ -381,7 +381,7 @@ test "factorize 360" {
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
     // 360 = 2^3 * 3^2 * 5^1
-    try testing.expectEqualStrings("((2 3) (3 2) (5 1))", str);
+    try testing.expectEqualStrings("(factors (2 3) (3 2) (5 1))", str);
 }
 
 // ============================================================================

@@ -30,7 +30,7 @@
 ; Define Named Functions
 ; ----------------------
 ; Use define to bind functions to names
-(define square (lambda (x) (* x 2)))
+(define square (lambda (x) (* x x)))
 (define cube (lambda (x) (^ x 3)))
 (define add (lambda (x y) (+ x y)))
 
