@@ -9,6 +9,6 @@ NestedInstallerFiles:
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/Tetraslam/lispium/releases/download/v0.5.0/lispium-windows-x86_64.zip
-    InstallerSha256: PLACEHOLDER_SHA256  # Update with actual SHA256
+    InstallerSha256: 6881DF12A73643C7903FC65F630EF2DDD3BC4CAD03082A371A97022F73ADF093
 ManifestType: installer
 ManifestVersion: 1.6.0
