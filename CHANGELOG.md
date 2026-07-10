@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Migrated to Zig 0.16.0 (new std.Io interface: readers/writers, file
+  system access, clocks). No user-facing behavior changes; all 504 tests
+  pass and all release targets cross-compile.
+- Benchmarks now use the shared builtin registry (bench previously carried
+  its own registration list).
+
 ## [0.5.0] - 2026-07-09
 
 Correctness and robustness overhaul. Highlights:
@@ -58,7 +67,7 @@ Correctness and robustness overhaul. Highlights:
 - `factorize` returns `(factors (p e) ...)`; `solve` reports `no-solution` for
   contradictions; `assume` returns a confirmation.
 
-## [Unreleased]
+## [0.1.0 - 0.4.0 development notes]
 
 ### Added
 - Basic symbolic manipulation capabilities

@@ -8372,10 +8372,10 @@ var memo_cache: ?std.StringHashMap(*Expr) = null;
 
 /// Convert expression to string for caching key
 fn memoExprToString(expr: *const Expr, allocator: std.mem.Allocator) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-    try memoWriteExpr(expr, result.writer(allocator));
-    return result.toOwnedSlice(allocator);
+    var result: std.Io.Writer.Allocating = .init(allocator);
+    errdefer result.deinit();
+    try memoWriteExpr(expr, &result.writer);
+    return result.toOwnedSlice();
 }
 
 fn memoWriteExpr(expr: *const Expr, writer: anytype) !void {
@@ -8581,10 +8581,10 @@ pub fn builtin_plot_ascii(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*E
     }
 
     // Build ASCII plot
-    var plot: std.ArrayList(u8) = .empty;
-    errdefer plot.deinit(allocator);
+    var plot: std.Io.Writer.Allocating = .init(allocator);
+    errdefer plot.deinit();
 
-    const writer = plot.writer(allocator);
+    const writer = &plot.writer;
     const y_range = y_max - y_min;
 
     for (0..height) |row| {
@@ -8624,7 +8624,7 @@ pub fn builtin_plot_ascii(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*E
     }
     writer.print("{d:.2}\n", .{x_max}) catch return BuiltinError.OutOfMemory;
 
-    const plot_str = plot.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const plot_str = plot.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var result_list: std.ArrayList(*Expr) = .empty;
     const plot_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -8717,9 +8717,9 @@ pub fn builtin_plot_svg(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
     }
 
     // Build SVG
-    var svg: std.ArrayList(u8) = .empty;
-    errdefer svg.deinit(allocator);
-    const writer = svg.writer(allocator);
+    var svg: std.Io.Writer.Allocating = .init(allocator);
+    errdefer svg.deinit();
+    const writer = &svg.writer;
 
     // SVG header
     writer.print("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{d:.0}\" height=\"{d:.0}\">\n", .{ svg_width, svg_height }) catch return BuiltinError.OutOfMemory;
@@ -8765,7 +8765,7 @@ pub fn builtin_plot_svg(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
 
     writer.print("</svg>\n", .{}) catch return BuiltinError.OutOfMemory;
 
-    const svg_str = svg.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const svg_str = svg.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var result_list: std.ArrayList(*Expr) = .empty;
     const svg_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -8857,9 +8857,9 @@ pub fn builtin_plot_points(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     }
 
     // Build output
-    var plot: std.ArrayList(u8) = .empty;
-    errdefer plot.deinit(allocator);
-    const writer = plot.writer(allocator);
+    var plot: std.Io.Writer.Allocating = .init(allocator);
+    errdefer plot.deinit();
+    const writer = &plot.writer;
 
     for (0..height) |row| {
         const y_at_row = y_max - (@as(f64, @floatFromInt(row)) / @as(f64, @floatFromInt(height - 1))) * (y_max - y_min);
@@ -8881,7 +8881,7 @@ pub fn builtin_plot_points(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     }
     writer.print("{d:.2}\n", .{x_max}) catch return BuiltinError.OutOfMemory;
 
-    const plot_str = plot.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const plot_str = plot.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var result_list: std.ArrayList(*Expr) = .empty;
     const plot_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -8939,10 +8939,10 @@ fn stepWriteExpr(expr: *const Expr, writer: anytype) !void {
 }
 
 fn stepExprToString(expr: *const Expr, allocator: std.mem.Allocator) ![]u8 {
-    var step_result: std.ArrayList(u8) = .empty;
-    errdefer step_result.deinit(allocator);
-    try stepWriteExpr(expr, step_result.writer(allocator));
-    return step_result.toOwnedSlice(allocator);
+    var step_result: std.Io.Writer.Allocating = .init(allocator);
+    errdefer step_result.deinit();
+    try stepWriteExpr(expr, &step_result.writer);
+    return step_result.toOwnedSlice();
 }
 
 pub fn builtin_diff_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -8956,9 +8956,9 @@ pub fn builtin_diff_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*E
     if (var_expr.* != .symbol) return BuiltinError.InvalidArgument;
     const var_name = var_expr.symbol;
 
-    var steps: std.ArrayList(u8) = .empty;
-    errdefer steps.deinit(allocator);
-    const writer = steps.writer(allocator);
+    var steps: std.Io.Writer.Allocating = .init(allocator);
+    errdefer steps.deinit();
+    const writer = &steps.writer;
 
     // Step 1: Show original expression
     writer.print("Step 1: Find d/d{s} of ", .{var_name}) catch return BuiltinError.OutOfMemory;
@@ -9026,7 +9026,7 @@ pub fn builtin_diff_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*E
     defer allocator.free(simp_str);
     writer.print("\nStep 4: Simplified result: {s}\n", .{simp_str}) catch return BuiltinError.OutOfMemory;
 
-    const steps_str = steps.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const steps_str = steps.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var step_result_list: std.ArrayList(*Expr) = .empty;
     const steps_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -9053,9 +9053,9 @@ pub fn builtin_integrate_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinErr
     if (var_expr.* != .symbol) return BuiltinError.InvalidArgument;
     const var_name = var_expr.symbol;
 
-    var steps: std.ArrayList(u8) = .empty;
-    errdefer steps.deinit(allocator);
-    const writer = steps.writer(allocator);
+    var steps: std.Io.Writer.Allocating = .init(allocator);
+    errdefer steps.deinit();
+    const writer = &steps.writer;
 
     // Step 1: Show original expression
     writer.print("Step 1: Find integral of ", .{}) catch return BuiltinError.OutOfMemory;
@@ -9113,7 +9113,7 @@ pub fn builtin_integrate_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinErr
     defer allocator.free(simp_str);
     writer.print("\nStep 4: Simplified result: {s} + C\n", .{simp_str}) catch return BuiltinError.OutOfMemory;
 
-    const steps_str = steps.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const steps_str = steps.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var step_result_list: std.ArrayList(*Expr) = .empty;
     const steps_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -9136,9 +9136,9 @@ pub fn builtin_simplify_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinErro
     const allocator = env.allocator;
     const expr = args.items[0];
 
-    var steps: std.ArrayList(u8) = .empty;
-    errdefer steps.deinit(allocator);
-    const writer = steps.writer(allocator);
+    var steps: std.Io.Writer.Allocating = .init(allocator);
+    errdefer steps.deinit();
+    const writer = &steps.writer;
 
     // Step 1: Show original expression
     writer.print("Step 1: Original expression: ", .{}) catch return BuiltinError.OutOfMemory;
@@ -9165,7 +9165,7 @@ pub fn builtin_simplify_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinErro
     defer allocator.free(simp_str);
     writer.print("\nStep 3: Simplified result: {s}\n", .{simp_str}) catch return BuiltinError.OutOfMemory;
 
-    const steps_str = steps.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const steps_str = steps.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var step_result_list: std.ArrayList(*Expr) = .empty;
     const steps_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -9192,9 +9192,9 @@ pub fn builtin_solve_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     if (var_expr.* != .symbol) return BuiltinError.InvalidArgument;
     const var_name = var_expr.symbol;
 
-    var steps: std.ArrayList(u8) = .empty;
-    errdefer steps.deinit(allocator);
-    const writer = steps.writer(allocator);
+    var steps: std.Io.Writer.Allocating = .init(allocator);
+    errdefer steps.deinit();
+    const writer = &steps.writer;
 
     // Step 1: Show equation
     writer.print("Step 1: Solve for {s} in: ", .{var_name}) catch return BuiltinError.OutOfMemory;
@@ -9235,7 +9235,7 @@ pub fn builtin_solve_steps(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*
     defer allocator.free(sol_str);
     writer.print("\nStep 3: Solution(s): {s} = {s}\n", .{ var_name, sol_str }) catch return BuiltinError.OutOfMemory;
 
-    const steps_str = steps.toOwnedSlice(allocator) catch return BuiltinError.OutOfMemory;
+    const steps_str = steps.toOwnedSlice() catch return BuiltinError.OutOfMemory;
 
     var step_result_list: std.ArrayList(*Expr) = .empty;
     const steps_sym = allocator.create(Expr) catch return BuiltinError.OutOfMemory;

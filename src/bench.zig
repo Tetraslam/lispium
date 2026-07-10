@@ -83,17 +83,18 @@ const benchmarks = [_]Benchmark{
     .{ .name = "bessel-j0", .category = "Special", .expr = "(besselj 0 2.5)", .iterations = 3000 },
 };
 
-pub fn run(allocator: std.mem.Allocator, mode: OutputMode, quick: bool) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+pub fn run(allocator: std.mem.Allocator, io: std.Io, mode: OutputMode, quick: bool) !void {
+    var stdout_writer: std.Io.File.Writer = .init(.stdout(), io, &.{});
+    const stdout = &stdout_writer.interface;
 
     var results: std.ArrayList(BenchmarkResult) = .empty;
     defer results.deinit(allocator);
 
     var env = Env.init(allocator);
     defer env.deinit();
-    try initBuiltins(&env);
+    try @import("registry.zig").installBuiltins(&env);
 
-    const start_total = std.time.nanoTimestamp();
+    const start_total = std.Io.Timestamp.now(io, .awake).nanoseconds;
 
     // Print header for pretty mode
     if (mode == .pretty) {
@@ -116,7 +117,7 @@ pub fn run(allocator: std.mem.Allocator, mode: OutputMode, quick: bool) !void {
             }
         }
 
-        const result = try runBenchmark(allocator, &env, bench.name, bench.category, bench.expr, iterations);
+        const result = try runBenchmark(allocator, io, &env, bench.name, bench.category, bench.expr, iterations);
         try results.append(allocator, result);
 
         switch (mode) {
@@ -126,7 +127,7 @@ pub fn run(allocator: std.mem.Allocator, mode: OutputMode, quick: bool) !void {
         }
     }
 
-    const end_total = std.time.nanoTimestamp();
+    const end_total = std.Io.Timestamp.now(io, .awake).nanoseconds;
     const total_ns: u64 = @intCast(end_total - start_total);
 
     // Print footer/summary
@@ -139,6 +140,7 @@ pub fn run(allocator: std.mem.Allocator, mode: OutputMode, quick: bool) !void {
 
 fn runBenchmark(
     allocator: std.mem.Allocator,
+    io: std.Io,
     env: *Env,
     name: []const u8,
     category: []const u8,
@@ -163,7 +165,7 @@ fn runBenchmark(
 
     // Actual benchmark
     for (0..iterations) |i| {
-        const start = std.time.nanoTimestamp();
+        const start = std.Io.Timestamp.now(io, .awake).nanoseconds;
 
         const expr = try parseExpr(allocator, expr_str);
         defer {
@@ -178,7 +180,7 @@ fn runBenchmark(
         result.deinit(allocator);
         allocator.destroy(result);
 
-        const end = std.time.nanoTimestamp();
+        const end = std.Io.Timestamp.now(io, .awake).nanoseconds;
         times[i] = @intCast(end - start);
     }
 
@@ -377,57 +379,3 @@ fn formatTime(buf: []u8, ns: u64) []const u8 {
     }
 }
 
-fn initBuiltins(env: *Env) !void {
-    // Arithmetic
-    try env.putBuiltin("+", builtins.builtin_add);
-    try env.putBuiltin("-", builtins.builtin_subtract);
-    try env.putBuiltin("*", builtins.builtin_multiply);
-    try env.putBuiltin("/", builtins.builtin_divide);
-    try env.putBuiltin("^", builtins.builtin_power);
-    try env.putBuiltin("pow", builtins.builtin_power);
-
-    // Algebra
-    try env.putBuiltin("simplify", builtins.builtin_simplify);
-    try env.putBuiltin("evalf", builtins.builtin_evalf);
-    try env.putBuiltin("N", builtins.builtin_evalf);
-    try env.putBuiltin("diff", builtins.builtin_diff);
-    try env.putBuiltin("integrate", builtins.builtin_integrate);
-    try env.putBuiltin("expand", builtins.builtin_expand);
-    try env.putBuiltin("substitute", builtins.builtin_substitute);
-    try env.putBuiltin("taylor", builtins.builtin_taylor);
-    try env.putBuiltin("solve", builtins.builtin_solve);
-    try env.putBuiltin("factor", builtins.builtin_factor);
-
-    // Trigonometric
-    try env.putBuiltin("sin", builtins.builtin_sin);
-    try env.putBuiltin("cos", builtins.builtin_cos);
-    try env.putBuiltin("tan", builtins.builtin_tan);
-
-    // Transcendental
-    try env.putBuiltin("exp", builtins.builtin_exp);
-    try env.putBuiltin("ln", builtins.builtin_ln);
-    try env.putBuiltin("sqrt", builtins.builtin_sqrt);
-
-    // Matrix operations
-    try env.putBuiltin("matrix", builtins.builtin_matrix);
-    try env.putBuiltin("det", builtins.builtin_det);
-    try env.putBuiltin("transpose", builtins.builtin_transpose);
-    try env.putBuiltin("matmul", builtins.builtin_matmul);
-
-    // Vector operations
-    try env.putBuiltin("vector", builtins.builtin_vector);
-    try env.putBuiltin("dot", builtins.builtin_dot);
-    try env.putBuiltin("cross", builtins.builtin_cross);
-    try env.putBuiltin("norm", builtins.builtin_norm);
-
-    // Number theory
-    try env.putBuiltin("factorial", builtins.builtin_factorial);
-    try env.putBuiltin("gcd", builtins.builtin_gcd);
-    try env.putBuiltin("prime?", builtins.builtin_prime);
-    try env.putBuiltin("factorize", builtins.builtin_factorize);
-
-    // Special functions
-    try env.putBuiltin("gamma", builtins.builtin_gamma);
-    try env.putBuiltin("erf", builtins.builtin_erf);
-    try env.putBuiltin("besselj", builtins.builtin_besselj);
-}

@@ -10,10 +10,10 @@ const Expr = @import("parser.zig").Expr;
 const builtin_docs = @import("lsp/builtin_docs.zig");
 const server_version = build_options.version;
 
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     var server = Server.init(allocator);
     defer server.deinit();
-    try server.run();
+    try server.run(io);
 }
 
 const Server = struct {
@@ -45,24 +45,21 @@ const Server = struct {
         self.documents.deinit();
     }
 
-    fn run(self: *Server) !void {
-        const stdin_file = std.fs.File.stdin();
-        const stdout_file = std.fs.File.stdout();
-        const stdin = stdin_file.deprecatedReader();
+    fn run(self: *Server, io: std.Io) !void {
+        const stdin_buffer = try self.allocator.alloc(u8, 1024 * 1024);
+        defer self.allocator.free(stdin_buffer);
+        var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, stdin_buffer);
+        const stdin = &stdin_reader.interface;
 
-        var line_buf = std.array_list.Managed(u8).init(self.allocator);
-        defer line_buf.deinit();
+        var stdout_writer: std.Io.File.Writer = .init(.stdout(), io, &.{});
+        const stdout = &stdout_writer.interface;
 
         while (!self.shutdown_requested) {
             // Read headers
             var content_length: ?usize = null;
             while (true) {
-                line_buf.clearRetainingCapacity();
-                stdin.readUntilDelimiterArrayList(&line_buf, '\n', 1024 * 1024) catch |err| {
-                    if (err == error.EndOfStream) return;
-                    return err;
-                };
-                const trimmed = std.mem.trim(u8, line_buf.items, "\r\n");
+                const raw_line = (stdin.takeDelimiter('\n') catch |err| return err) orelse return;
+                const trimmed = std.mem.trim(u8, raw_line, "\r\n");
                 if (trimmed.len == 0) break;
 
                 if (std.mem.startsWith(u8, trimmed, "Content-Length: ")) {
@@ -75,31 +72,29 @@ const Server = struct {
             // Read content
             const content = try self.allocator.alloc(u8, len);
             defer self.allocator.free(content);
-            const bytes_read = stdin.readAll(content) catch |err| {
+            stdin.readSliceAll(content) catch |err| {
                 if (err == error.EndOfStream) return;
                 return err;
             };
-            if (bytes_read != len) continue;
 
             // Parse JSON-RPC message
             const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content, .{}) catch continue;
             defer parsed.deinit();
 
             // Handle the message
-            const response = try self.handleMessage(parsed.value, stdout_file);
+            const response = try self.handleMessage(parsed.value, stdout);
             if (response) |resp| {
                 defer self.allocator.free(resp);
-                self.writeMessage(stdout_file, resp);
+                self.writeMessage(stdout, resp);
             }
         }
     }
 
-    fn writeMessage(_: *Server, stdout: std.fs.File, content: []const u8) void {
-        const writer = stdout.deprecatedWriter();
-        writer.print("Content-Length: {d}\r\n\r\n{s}", .{ content.len, content }) catch return;
+    fn writeMessage(_: *Server, stdout: *std.Io.Writer, content: []const u8) void {
+        stdout.print("Content-Length: {d}\r\n\r\n{s}", .{ content.len, content }) catch return;
     }
 
-    fn handleMessage(self: *Server, msg: std.json.Value, stdout: std.fs.File) !?[]const u8 {
+    fn handleMessage(self: *Server, msg: std.json.Value, stdout: *std.Io.Writer) !?[]const u8 {
         const obj = msg.object;
 
         const method = obj.get("method") orelse return null;
@@ -157,7 +152,7 @@ const Server = struct {
         return try self.makeResponse(id, capabilities);
     }
 
-    fn handleDidOpen(self: *Server, params: ?std.json.Value, stdout: std.fs.File) !void {
+    fn handleDidOpen(self: *Server, params: ?std.json.Value, stdout: *std.Io.Writer) !void {
         const p = params orelse return;
         const text_doc = p.object.get("textDocument") orelse return;
         const uri = text_doc.object.get("uri") orelse return;
@@ -177,7 +172,7 @@ const Server = struct {
         try self.publishDiagnostics(uri.string, text.string, stdout);
     }
 
-    fn handleDidChange(self: *Server, params: ?std.json.Value, stdout: std.fs.File) !void {
+    fn handleDidChange(self: *Server, params: ?std.json.Value, stdout: *std.Io.Writer) !void {
         const p = params orelse return;
         const text_doc = p.object.get("textDocument") orelse return;
         const uri = text_doc.object.get("uri") orelse return;
@@ -262,7 +257,7 @@ const Server = struct {
         return try self.makeResponse(id, buf.items);
     }
 
-    fn publishDiagnostics(self: *Server, uri: []const u8, content: []const u8, stdout: std.fs.File) !void {
+    fn publishDiagnostics(self: *Server, uri: []const u8, content: []const u8, stdout: *std.Io.Writer) !void {
         var diagnostics: std.ArrayList(u8) = .empty;
         defer diagnostics.deinit(self.allocator);
 
@@ -352,19 +347,14 @@ const Server = struct {
     }
 
     fn makeResponse(self: *Server, id: ?std.json.Value, result: []const u8) ![]const u8 {
-        var buf: std.ArrayList(u8) = .empty;
-
         if (id) |i| {
             switch (i) {
-                .integer => |n| try std.fmt.format(buf.writer(self.allocator), "{{\"jsonrpc\": \"2.0\", \"id\": {d}, \"result\": {s}}}", .{ n, result }),
-                .string => |s| try std.fmt.format(buf.writer(self.allocator), "{{\"jsonrpc\": \"2.0\", \"id\": \"{s}\", \"result\": {s}}}", .{ s, result }),
-                else => try std.fmt.format(buf.writer(self.allocator), "{{\"jsonrpc\": \"2.0\", \"id\": null, \"result\": {s}}}", .{result}),
+                .integer => |n| return try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\": \"2.0\", \"id\": {d}, \"result\": {s}}}", .{ n, result }),
+                .string => |s| return try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\": \"2.0\", \"id\": \"{s}\", \"result\": {s}}}", .{ s, result }),
+                else => {},
             }
-        } else {
-            try std.fmt.format(buf.writer(self.allocator), "{{\"jsonrpc\": \"2.0\", \"id\": null, \"result\": {s}}}", .{result});
         }
-
-        return try buf.toOwnedSlice(self.allocator);
+        return try std.fmt.allocPrint(self.allocator, "{{\"jsonrpc\": \"2.0\", \"id\": null, \"result\": {s}}}", .{result});
     }
 };
 

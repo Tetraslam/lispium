@@ -13,32 +13,36 @@ const registry = @import("registry.zig");
 
 pub const version = build_options.version;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     // Run on a thread with a large stack so the evaluator's recursion-depth
     // guard (MAX_EVAL_DEPTH) triggers a clean error before any native stack
     // overflow can occur.
     const thread = try std.Thread.spawn(
         .{ .stack_size = 256 * 1024 * 1024 },
         mainImpl,
-        .{},
+        .{init},
     );
     thread.join();
 }
 
-fn mainImpl() !void {
+fn mainImpl(init: std.process.Init) !void {
     // The CLI uses the fast thread-safe allocator; leak detection is
     // covered by the test suite (which runs on std.testing.allocator).
     const allocator = std.heap.smp_allocator;
-    var args_it = try std.process.argsWithAllocator(allocator);
+    const io = init.io;
+
+    var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args_it.deinit();
     _ = args_it.skip(); // skip executable name
 
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    var stdout_writer: std.Io.File.Writer = .init(.stdout(), io, &.{});
+    const stdout = &stdout_writer.interface;
+    var stderr_writer: std.Io.File.Writer = .init(.stderr(), io, &.{});
+    const stderr = &stderr_writer.interface;
 
     if (args_it.next()) |cmd| {
         if (std.mem.eql(u8, cmd, "repl")) {
-            try repl.run(allocator);
+            try repl.run(allocator, io);
             return;
         } else if (std.mem.eql(u8, cmd, "eval")) {
             // Evaluate a single expression: lispium eval "(+ 1 2)"
@@ -55,7 +59,7 @@ fn mainImpl() !void {
                 try stderr.print("Usage: lispium run <file.lisp>\n", .{});
                 return;
             };
-            const ok = try runFile(allocator, file_path, stdout, stderr);
+            const ok = try runFile(allocator, io, file_path, stdout, stderr);
             if (!ok) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
@@ -65,7 +69,7 @@ fn mainImpl() !void {
             try stdout.print("lispium {s}\n", .{version});
             return;
         } else if (std.mem.eql(u8, cmd, "lsp")) {
-            try lsp.run(allocator);
+            try lsp.run(allocator, io);
             return;
         } else if (std.mem.eql(u8, cmd, "bench")) {
             // Parse bench options
@@ -94,7 +98,7 @@ fn mainImpl() !void {
                 }
             }
 
-            try bench.run(allocator, mode, quick);
+            try bench.run(allocator, io, mode, quick);
             return;
         }
     }
@@ -210,16 +214,10 @@ fn evalExpression(allocator: std.mem.Allocator, input: []const u8, stdout: anyty
     return true;
 }
 
-fn runFile(allocator: std.mem.Allocator, file_path: []const u8, stdout: anytype, stderr: anytype) !bool {
+fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdout: anytype, stderr: anytype) !bool {
     // Read file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        try stderr.print("Error opening file '{s}': {}\n", .{ file_path, err });
-        return false;
-    };
-    defer file.close();
-
-    const content = file.readToEndAlloc(allocator, 1024 * 1024 * 10) catch |err| {
-        try stderr.print("Error reading file: {}\n", .{err});
+    const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024 * 10)) catch |err| {
+        try stderr.print("Error reading file '{s}': {}\n", .{ file_path, err });
         return false;
     };
     defer allocator.free(content);

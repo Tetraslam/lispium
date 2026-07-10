@@ -6,14 +6,9 @@ pub fn build(b: *std.Build) void {
 
     // Read version from VERSION file, fallback to "dev"
     const version = b.option([]const u8, "version", "Version string") orelse blk: {
-        const version_file = std.fs.cwd().openFile("VERSION", .{}) catch break :blk "dev";
-        defer version_file.close();
         var buf: [32]u8 = undefined;
-        const bytes_read = version_file.readAll(&buf) catch break :blk "dev";
-        // Trim trailing newline
-        var len = bytes_read;
-        while (len > 0 and (buf[len - 1] == '\n' or buf[len - 1] == '\r')) : (len -= 1) {}
-        break :blk b.dupe(buf[0..len]);
+        const contents = b.build_root.handle.readFile(b.graph.io, "VERSION", &buf) catch break :blk "dev";
+        break :blk b.dupe(std.mem.trim(u8, contents, " \t\r\n"));
     };
 
     const exe_module = b.createModule(.{

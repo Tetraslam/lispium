@@ -301,7 +301,7 @@ fn getCurrentWord(input: []const u8) []const u8 {
     return input[start..];
 }
 
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     // Every evaluated input line is kept alive for the whole session:
     // parsed symbols are slices into these buffers, and anything stored in
     // the environment (defines, rules, lambdas) must remain valid.
@@ -317,16 +317,18 @@ pub fn run(allocator: std.mem.Allocator) !void {
     // Initialize builtins (shared registry: single source of truth)
     try registry.installBuiltins(&env);
 
-    const stdout_file = std.fs.File.stdout();
-    const stdin_file = std.fs.File.stdin();
-    const stdout = stdout_file.deprecatedWriter();
-    const stdin = stdin_file.deprecatedReader();
-    var line_buf = std.array_list.Managed(u8).init(allocator);
-    defer line_buf.deinit();
+    var stdout_writer: std.Io.File.Writer = .init(.stdout(), io, &.{});
+    const stdout = &stdout_writer.interface;
+
+    // Line buffer for stdin (1 MiB max line length, matching the old limit)
+    const stdin_buffer = try allocator.alloc(u8, 1024 * 1024);
+    defer allocator.free(stdin_buffer);
+    var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, stdin_buffer);
+    const stdin = &stdin_reader.interface;
 
     // Multi-line expression buffer
-    var expr_buf = std.array_list.Managed(u8).init(allocator);
-    defer expr_buf.deinit();
+    var expr_buf: std.ArrayList(u8) = .empty;
+    defer expr_buf.deinit(allocator);
 
     // Print welcome message
     try stdout.print("Lispium {s} - Symbolic Computer Algebra System\n", .{version});
@@ -340,17 +342,20 @@ pub fn run(allocator: std.mem.Allocator) !void {
             try stdout.print("      .. ", .{});
         }
 
-        line_buf.clearRetainingCapacity();
-        stdin.readUntilDelimiterArrayList(&line_buf, '\n', 1024 * 1024) catch |err| {
-            if (err == error.EndOfStream) {
-                try stdout.print("\nGoodbye!\n", .{});
+        const maybe_line = stdin.takeDelimiter('\n') catch |err| {
+            if (err == error.StreamTooLong) {
+                try stdout.print("Error: input line too long\n", .{});
                 break;
             }
             return err;
         };
+        const raw_line = maybe_line orelse {
+            try stdout.print("\nGoodbye!\n", .{});
+            break;
+        };
 
         // Trim whitespace from this line
-        const line = std.mem.trim(u8, line_buf.items, " \t\r\n");
+        const line = std.mem.trim(u8, raw_line, " \t\r\n");
 
         // Handle empty line
         if (line.len == 0) {
@@ -469,9 +474,9 @@ pub fn run(allocator: std.mem.Allocator) !void {
 
         // Append line to expression buffer
         if (expr_buf.items.len > 0) {
-            try expr_buf.append(' ');
+            try expr_buf.append(allocator, ' ');
         }
-        try expr_buf.appendSlice(code);
+        try expr_buf.appendSlice(allocator, code);
 
         // Check if expression is complete (balanced parens)
         const paren_depth = countParens(expr_buf.items);
@@ -575,7 +580,7 @@ const PrintError = error{
     RecursionLimit,
     CyclicExpression,
     OutOfMemory,
-} || std.fs.File.WriteError;
+} || std.Io.Writer.Error;
 
 const MAX_VALIDATION_DEPTH = 1000;
 
@@ -667,7 +672,7 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
                 try writer.print("{s}", .{s});
             }
         },
-        .lambda => |_| try writer.print("<lambda>", .{}),
+        .lambda => try writer.print("<lambda>", .{}),
         .list => |lst| {
             if (lst.items.len == 0) {
                 try writer.print("()", .{});

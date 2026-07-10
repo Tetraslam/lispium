@@ -21,10 +21,10 @@ pub fn parseExpr(allocator: std.mem.Allocator, input: []const u8) !*Expr {
 }
 
 pub fn exprToString(allocator: std.mem.Allocator, expr: *const Expr) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-    try writeExpr(expr, result.writer(allocator));
-    return result.toOwnedSlice(allocator);
+    var result: std.Io.Writer.Allocating = .init(allocator);
+    errdefer result.deinit();
+    try writeExpr(expr, &result.writer);
+    return result.toOwnedSlice();
 }
 
 pub fn writeExpr(expr: *const Expr, writer: anytype) !void {
