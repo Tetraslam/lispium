@@ -10,7 +10,7 @@ depends=()
 provides=('lispium')
 conflicts=('lispium')
 source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/Tetraslam/lispium/releases/download/v${pkgver}/lispium-linux-x86_64.tar.gz")
-sha256sums_x86_64=('c65d6a489f0b82532d7cf6c1f08860372b4799d7764aef7c001784e11908dfde')
+sha256sums_x86_64=('95e8f2279ef9b26113b7a0da197d938693d7b89ddc11fc68161ba7600e1117d6')
 
 package() {
     install -Dm755 "${srcdir}/lispium" "${pkgdir}/usr/bin/lispium"
