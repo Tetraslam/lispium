@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.1] - 2026-07-10
 
 ### Changed
 - Migrated to Zig 0.16.0 (new std.Io interface: readers/writers, file
