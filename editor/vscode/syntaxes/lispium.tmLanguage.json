@@ -3,25 +3,63 @@
   "name": "Lispium",
   "scopeName": "source.lispium",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#strings" },
-    { "include": "#constants" },
-    { "include": "#special-forms" },
-    { "include": "#builtins-calculus" },
-    { "include": "#builtins-algebra" },
-    { "include": "#builtins-trig" },
-    { "include": "#builtins-matrix" },
-    { "include": "#builtins-vector" },
-    { "include": "#builtins-complex" },
-    { "include": "#builtins-logic" },
-    { "include": "#builtins-number-theory" },
-    { "include": "#builtins-statistics" },
-    { "include": "#builtins-special" },
-    { "include": "#builtins-list" },
-    { "include": "#builtins-other" },
-    { "include": "#operators" },
-    { "include": "#parens" },
-    { "include": "#symbols" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#special-forms"
+    },
+    {
+      "include": "#builtins-calculus"
+    },
+    {
+      "include": "#builtins-algebra"
+    },
+    {
+      "include": "#builtins-trig"
+    },
+    {
+      "include": "#builtins-matrix"
+    },
+    {
+      "include": "#builtins-vector"
+    },
+    {
+      "include": "#builtins-complex"
+    },
+    {
+      "include": "#builtins-logic"
+    },
+    {
+      "include": "#builtins-number-theory"
+    },
+    {
+      "include": "#builtins-statistics"
+    },
+    {
+      "include": "#builtins-special"
+    },
+    {
+      "include": "#builtins-list"
+    },
+    {
+      "include": "#builtins-other"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#parens"
+    },
+    {
+      "include": "#symbols"
+    }
   ],
   "repository": {
     "comments": {
@@ -65,7 +103,7 @@
     },
     "builtins-algebra": {
       "name": "support.function.algebra.lispium",
-      "match": "(?<=\\()\\s*(simplify|simplify-steps|expand|solve|solve-steps|factor|partial-fractions|collect|substitute|roots|discriminant|coeffs|polydiv|polygcd|polylcm|rewrite)(?=\\s|\\))"
+      "match": "(?<=\\()\\s*(simplify|simplify-steps|expand|solve|solve-steps|factor|partial-fractions|collect|substitute|roots|discriminant|coeffs|polydiv|polygcd|polylcm|rewrite|evalf|N|abs|floor|ceil|round|sign)(?=\\s|\\))"
     },
     "builtins-trig": {
       "name": "support.function.trig.lispium",
@@ -117,13 +155,19 @@
           "begin": "\\(",
           "end": "\\)",
           "beginCaptures": {
-            "0": { "name": "punctuation.paren.open.lispium" }
+            "0": {
+              "name": "punctuation.paren.open.lispium"
+            }
           },
           "endCaptures": {
-            "0": { "name": "punctuation.paren.close.lispium" }
+            "0": {
+              "name": "punctuation.paren.close.lispium"
+            }
           },
           "patterns": [
-            { "include": "$self" }
+            {
+              "include": "$self"
+            }
           ]
         }
       ]

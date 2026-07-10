@@ -5,9 +5,11 @@ Language support for [Lispium](https://github.com/Tetraslam/lispium) - A Symboli
 ## Features
 
 - **Syntax Highlighting**: Full TextMate grammar for `.lspm` files
-- **Hover Documentation**: View documentation for builtin functions on hover
-- **Autocompletion**: Get suggestions for all Lispium builtins
+- **Hover Documentation**: Docs for every builtin and special form (175 entries)
+- **Autocompletion**: All builtins with signatures and documentation
+- **Formatting**: Format Document and format-on-save via `lispium fmt` (see STYLE.md)
 - **Diagnostics**: Real-time error detection for unbalanced parentheses
+- **Restart command**: "Lispium: Restart Language Server" after upgrading the binary
 
 ## Requirements
 
@@ -26,6 +28,9 @@ Language support for [Lispium](https://github.com/Tetraslam/lispium) - A Symboli
 ### Install Lispium
 
 ```bash
+# Any platform (uv)
+uv tool install lispium
+
 # macOS (Homebrew)
 brew install Tetraslam/lispium/lispium
 

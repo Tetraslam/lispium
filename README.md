@@ -170,8 +170,8 @@ every builtin with signatures.
 ## Formatting
 
 ```bash
-lispium fmt -w .             # canonical style, see STYLE.md (dirs recurse)
-lispium fmt --check ...      # CI mode
+lispium fmt                  # canonical style, in place (see STYLE.md)
+lispium fmt --check .        # CI mode
 ```
 
 Editors format through the LSP (`:format` in Helix, format-on-save in VS Code).

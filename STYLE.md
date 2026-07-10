@@ -73,10 +73,10 @@ the start or end of the file.
 ## Tooling
 
 ```bash
-lispium fmt file.lspm          # print formatted source to stdout
-lispium fmt -w file.lspm ...   # rewrite files in place
-lispium fmt --check file.lspm  # exit 1 if anything is unformatted (CI)
-lispium fmt -w .               # directories recurse into their .lspm files
+lispium fmt                    # format the current directory in place
+lispium fmt file.lspm dir ...  # format files/directories in place
+lispium fmt --check .          # exit 1 if anything is unformatted (CI)
+lispium fmt --stdout file      # print formatted source instead of writing
 ```
 
 Editors get the same formatter through the LSP: `:format` in Helix,

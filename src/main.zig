@@ -73,23 +73,41 @@ fn mainImpl(init: std.process.Init) !void {
             try lsp.run(allocator, io);
             return;
         } else if (std.mem.eql(u8, cmd, "fmt")) {
-            // Format source files: lispium fmt [-w|--check] <file...>
-            var write_in_place = false;
+            // Format source files in place (like zig fmt).
+            // --check reports unformatted files; --stdout prints instead.
             var check_only = false;
+            var to_stdout = false;
             var files: std.ArrayList([]const u8) = .empty;
             defer files.deinit(allocator);
             while (args_it.next()) |arg| {
-                if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--write")) {
-                    write_in_place = true;
-                } else if (std.mem.eql(u8, arg, "--check")) {
+                if (std.mem.eql(u8, arg, "--check")) {
                     check_only = true;
+                } else if (std.mem.eql(u8, arg, "--stdout")) {
+                    to_stdout = true;
+                } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--write")) {
+                    // Writing is the default; accepted for compatibility
+                } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                    try stdout.print(
+                        \\Usage: lispium fmt [flags] [paths...]
+                        \\
+                        \\Formats Lispium source to the canonical style (see STYLE.md).
+                        \\Files are rewritten in place. Directories are searched
+                        \\recursively for .lspm files. With no paths, formats the
+                        \\current directory.
+                        \\
+                        \\Flags:
+                        \\  --check    Report unformatted files and exit 1 (CI mode)
+                        \\  --stdout   Print formatted source instead of writing
+                        \\
+                    , .{});
+                    return;
                 } else {
                     try files.append(allocator, arg);
                 }
             }
             if (files.items.len == 0) {
-                try stderr.print("Usage: lispium fmt [-w|--check] <file.lspm|dir...>\n", .{});
-                std.process.exit(1);
+                // Default: format the current directory
+                try files.append(allocator, ".");
             }
 
             // Expand directory arguments into their .lspm files (recursive)
@@ -109,7 +127,7 @@ fn mainImpl(init: std.process.Init) !void {
                 std.process.exit(1);
             }
 
-            const ok = try formatFiles(allocator, io, expanded.items, write_in_place, check_only, stdout, stderr);
+            const ok = try formatFiles(allocator, io, expanded.items, check_only, to_stdout, stdout, stderr);
             if (!ok) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "bench")) {
@@ -188,14 +206,14 @@ fn collectLspmFiles(
     return true;
 }
 
-/// Formats each file. Without flags the result is printed to stdout;
-/// -w rewrites files in place; --check reports unformatted files and fails.
+/// Formats each file in place (the default). --check reports unformatted
+/// files and fails; --stdout prints the formatted source instead of writing.
 fn formatFiles(
     allocator: std.mem.Allocator,
     io: std.Io,
     files: []const []const u8,
-    write_in_place: bool,
     check_only: bool,
+    to_stdout: bool,
     stdout: anytype,
     stderr: anytype,
 ) !bool {
@@ -225,7 +243,9 @@ fn formatFiles(
                 try stderr.print("{s}: not formatted\n", .{path});
                 all_ok = false;
             }
-        } else if (write_in_place) {
+        } else if (to_stdout) {
+            try stdout.print("{s}", .{formatted});
+        } else {
             if (!std.mem.eql(u8, source, formatted)) {
                 std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = formatted }) catch |err| {
                     try stderr.print("Error writing '{s}': {}\n", .{ path, err });
@@ -234,8 +254,6 @@ fn formatFiles(
                 };
                 try stdout.print("formatted {s}\n", .{path});
             }
-        } else {
-            try stdout.print("{s}", .{formatted});
         }
     }
     return all_ok;
@@ -249,7 +267,7 @@ fn printUsage(writer: anytype) !void {
         \\  lispium repl              Start interactive REPL
         \\  lispium eval "<expr>"     Evaluate a single expression
         \\  lispium run <file.lspm>   Run a Lispium source file
-        \\  lispium fmt <file.lspm>   Format source (use -w to write, --check for CI)
+        \\  lispium fmt [paths...]    Format source in place (--check for CI, --stdout to print)
         \\  lispium bench [options]   Run benchmark suite
         \\  lispium lsp               Start language server (for editors)
         \\  lispium help              Show this help message

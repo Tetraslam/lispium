@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.2] - 2026-07-10
+
+### Changed
+- `lispium fmt` now formats in place by default (like `zig fmt`); `--stdout`
+  prints instead, `--check` unchanged, and no arguments means the current
+  directory. `-w` is accepted as a no-op for compatibility.
+- Builtin documentation unified into a single table (src/docs.zig) consumed
+  by LSP hover, LSP completion (now with signatures), and REPL `?func` help:
+  all 168 builtins plus special forms are documented (previously ~50).
+
+### Fixed
+- VS Code: `+ - * / ^ = < >` and names like `gf+`/`prime?` are now proper
+  words (hover/double-click/completion ranges); grammar highlights
+  `abs`/`floor`/`ceil`/`round`/`sign`/`evalf`.
+
 ## [0.6.1] - 2026-07-10
 
 ### Added

@@ -277,18 +277,20 @@ const Server = struct {
 
         try buf.appendSlice(self.allocator, "[");
         var first = true;
-        for (builtin_docs.all_builtins) |name| {
+        for (@import("docs.zig").docs) |entry| {
             if (!first) try buf.appendSlice(self.allocator, ",");
             first = false;
 
-            const doc = builtin_docs.getDocumentation(name) orelse "";
+            const doc = builtin_docs.getDocumentation(entry.name) orelse "";
             var doc_buf: [2048]u8 = undefined;
             const escaped_doc = escapeJson(doc, &doc_buf);
+            var sig_buf: [512]u8 = undefined;
+            const escaped_sig = escapeJson(entry.signature, &sig_buf);
 
             var item_buf: [4096]u8 = undefined;
             const item = std.fmt.bufPrint(&item_buf,
-                \\{{"label": "{s}", "kind": 3, "documentation": {{"kind": "markdown", "value": "{s}"}}}}
-            , .{ name, escaped_doc }) catch continue;
+                \\{{"label": "{s}", "kind": 3, "detail": "{s}", "documentation": {{"kind": "markdown", "value": "{s}"}}}}
+            , .{ entry.name, escaped_sig, escaped_doc }) catch continue;
             try buf.appendSlice(self.allocator, item);
         }
         try buf.appendSlice(self.allocator, "]");

@@ -1,13 +1,13 @@
 pkgbase = lispium-bin
 	pkgdesc = A Symbolic Computer Algebra System written in Zig
-	pkgver = 0.6.1
+	pkgver = 0.6.2
 	pkgrel = 1
 	url = https://github.com/Tetraslam/lispium
 	arch = x86_64
 	license = MIT
 	provides = lispium
 	conflicts = lispium
-	source_x86_64 = lispium-bin-0.6.1.tar.gz::https://github.com/Tetraslam/lispium/releases/download/v0.6.1/lispium-linux-x86_64.tar.gz
+	source_x86_64 = lispium-bin-0.6.2.tar.gz::https://github.com/Tetraslam/lispium/releases/download/v0.6.2/lispium-linux-x86_64.tar.gz
 	sha256sums_x86_64 = f543c80a2b27032e51513a8a51d5e7e150bbfee7e5745d9efef57a9e9f4ca82e
 
 pkgname = lispium-bin

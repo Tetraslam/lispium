@@ -7,6 +7,7 @@ const eval = @import("evaluator.zig").eval;
 const Env = @import("environment.zig").Env;
 const builtins = @import("builtins.zig");
 const registry = @import("registry.zig");
+const docs_table = @import("docs.zig");
 
 const version = build_options.version;
 
@@ -62,188 +63,29 @@ const help_text =
 ;
 
 /// List of all builtin function names for completion and help
-const builtin_names = [_][]const u8{
-    // Arithmetic
-    "+", "-", "*", "/", "^", "pow",
-    "abs", "floor", "ceil", "round", "sign",
-    // Algebra
-    "simplify", "diff", "integrate", "expand", "substitute", "taylor", "solve", "factor",
-    "partial-fractions", "collect", "limit",
-    // Trigonometric
-    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-    // Hyperbolic
-    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
-    // Transcendental
-    "exp", "ln", "log", "sqrt",
-    // Complex
-    "complex", "real", "imag", "conj", "magnitude", "arg",
-    // Rewrite
-    "rule", "rewrite",
-    // Matrix
-    "matrix", "det", "transpose", "trace", "matmul", "inv", "eigenvalues", "eigenvectors",
-    "linsolve", "lu", "charpoly",
-    // Vector
-    "vector", "dot", "cross", "norm",
-    // Vector calculus
-    "gradient", "grad", "divergence", "curl", "laplacian",
-    // Boolean
-    "and", "or", "not", "xor", "implies",
-    // Modular
-    "mod", "gcd", "lcm", "modpow",
-    // Polynomial
-    "coeffs", "polydiv", "polygcd", "polylcm", "roots", "discriminant",
-    // Assumptions
-    "assume", "is?",
-    // Comparisons
-    "=", "<", ">",
-    // Special functions
-    "gamma", "beta", "erf", "erfc", "besselj", "bessely", "digamma",
-    // Differential equations
-    "dsolve",
-    // Transforms
-    "fourier", "laplace", "inv-laplace",
-    // Tensor
-    "tensor", "tensor-rank", "tensor-contract", "tensor-product",
-    // Interpolation
-    "lagrange", "newton-interp",
-    // Root finding
-    "newton-raphson", "bisection",
-    // Continued fractions
-    "to-cf", "from-cf", "cf-convergent", "cf-rational",
-    // List operations
-    "car", "cdr", "cons", "list", "length", "nth", "map", "filter", "reduce",
-    "append", "reverse", "range",
-    // Memoization
-    "memoize", "memo-clear", "memo-stats",
-    // Plotting
-    "plot-ascii", "plot-svg", "plot-points",
-    // Step-by-step
-    "diff-steps", "integrate-steps", "simplify-steps", "solve-steps",
-    // Combinatorics
-    "factorial", "!", "binomial", "choose", "permutations", "combinations",
-    // Number theory
-    "prime?", "factorize", "totient", "extgcd", "crt",
-    // Statistics
-    "mean", "variance", "stddev", "median", "min", "max",
-    // Quaternions
-    "quat", "quat+", "quat*", "quat-conj", "quat-norm", "quat-inv", "quat-scalar", "quat-vector",
-    // Finite fields
-    "gf", "gf+", "gf-", "gf*", "gf/", "gf^", "gf-inv", "gf-neg",
-    // Export
-    "latex",
-    // Special forms (not builtins but useful to know)
-    "define", "lambda", "let", "letrec", "if", "sum", "product",
-};
+/// All documented names (builtins and special forms) from the shared table.
+fn allNames() []const []const u8 {
+    const names = comptime blk: {
+        var list: [docs_table.docs.len][]const u8 = undefined;
+        for (docs_table.docs, 0..) |doc, i| list[i] = doc.name;
+        const frozen = list;
+        break :blk frozen;
+    };
+    return &names;
+}
 
-/// Help text for specific functions
+/// Plain-text help for ?func queries, from the shared docs table.
 fn getFunctionHelp(name: []const u8) ?[]const u8 {
-    // Arithmetic
-    if (std.mem.eql(u8, name, "+")) return "(+ a b ...)  Addition - adds all arguments";
-    if (std.mem.eql(u8, name, "-")) return "(- a b ...)  Subtraction - subtracts subsequent args from first";
-    if (std.mem.eql(u8, name, "*")) return "(* a b ...)  Multiplication - multiplies all arguments";
-    if (std.mem.eql(u8, name, "/")) return "(/ a b)      Division - divides a by b";
-    if (std.mem.eql(u8, name, "^") or std.mem.eql(u8, name, "pow")) return "(^ base exp) Power - raises base to exponent";
-
-    // Calculus
-    if (std.mem.eql(u8, name, "diff")) return "(diff expr var [n])  Differentiate expr with respect to var, optionally n times\n  Example: (diff (^ x 3) x) => (* 3 (^ x 2))";
-    if (std.mem.eql(u8, name, "integrate")) return "(integrate expr var [a b])  Integrate expr with respect to var\n  Indefinite: (integrate (^ x 2) x) => (/ (^ x 3) 3)\n  Definite:   (integrate (^ x 2) x 0 1) => 0.333...";
-    if (std.mem.eql(u8, name, "taylor")) return "(taylor expr var point order)  Taylor series expansion\n  Example: (taylor (exp x) x 0 4) => (+ 1 x (/ (^ x 2) 2) ...)";
-    if (std.mem.eql(u8, name, "limit")) return "(limit expr var point)  Compute limit using L'Hopital's rule\n  Example: (limit (/ (sin x) x) x 0) => 1";
-
-    // Algebra
-    if (std.mem.eql(u8, name, "simplify")) return "(simplify expr)  Algebraic simplification\n  Example: (simplify (+ x x)) => (* 2 x)";
-    if (std.mem.eql(u8, name, "expand")) return "(expand expr)  Expand products and powers\n  Example: (expand (^ (+ x 1) 2)) => (+ (^ x 2) (* 2 x) 1)";
-    if (std.mem.eql(u8, name, "solve")) return "(solve expr var)  Solve equation expr=0 for var\n  Example: (solve (+ (^ x 2) (* -4 1)) x) => (solutions 2 -2)";
-    if (std.mem.eql(u8, name, "factor")) return "(factor expr var)  Factor polynomial in var\n  Example: (factor (+ (^ x 2) (* -1 1)) x) => (* (- x 1) (+ x 1))";
-    if (std.mem.eql(u8, name, "substitute")) return "(substitute expr var value)  Replace var with value in expr\n  Example: (substitute (+ x y) x 3) => (+ 3 y)";
-    if (std.mem.eql(u8, name, "collect")) return "(collect expr var)  Collect like terms in var\n  Example: (collect (+ (* 2 x) (* 3 x) 5) x) => (+ (* 5 x) 5)";
-
-    // Trig
-    if (std.mem.eql(u8, name, "sin")) return "(sin x)  Sine function";
-    if (std.mem.eql(u8, name, "cos")) return "(cos x)  Cosine function";
-    if (std.mem.eql(u8, name, "tan")) return "(tan x)  Tangent function";
-    if (std.mem.eql(u8, name, "asin")) return "(asin x)  Arc sine (inverse sine), returns radians";
-    if (std.mem.eql(u8, name, "acos")) return "(acos x)  Arc cosine (inverse cosine), returns radians";
-    if (std.mem.eql(u8, name, "atan")) return "(atan x)  Arc tangent (inverse tangent), returns radians";
-    if (std.mem.eql(u8, name, "atan2")) return "(atan2 y x)  Two-argument arc tangent";
-
-    // Hyperbolic
-    if (std.mem.eql(u8, name, "sinh")) return "(sinh x)  Hyperbolic sine";
-    if (std.mem.eql(u8, name, "cosh")) return "(cosh x)  Hyperbolic cosine";
-    if (std.mem.eql(u8, name, "tanh")) return "(tanh x)  Hyperbolic tangent";
-
-    // Transcendental
-    if (std.mem.eql(u8, name, "exp")) return "(exp x)  Exponential function e^x";
-    if (std.mem.eql(u8, name, "ln")) return "(ln x)  Natural logarithm (base e)";
-    if (std.mem.eql(u8, name, "log")) return "(log x [base])  Logarithm of x in the given base (default 10)\n  Example: (log 100 10) => 2";
-    if (std.mem.eql(u8, name, "sqrt")) return "(sqrt x)  Square root, equivalent to (^ x 0.5); (sqrt -4) => 2i";
-    if (std.mem.eql(u8, name, "abs")) return "(abs x)  Absolute value; magnitude for complex numbers";
-    if (std.mem.eql(u8, name, "floor")) return "(floor x)  Round down to the nearest integer";
-    if (std.mem.eql(u8, name, "ceil")) return "(ceil x)  Round up to the nearest integer";
-    if (std.mem.eql(u8, name, "round")) return "(round x)  Round to the nearest integer";
-    if (std.mem.eql(u8, name, "sign")) return "(sign x)  -1, 0, or 1 depending on the sign of x";
-
-    // Complex
-    if (std.mem.eql(u8, name, "complex")) return "(complex re im)  Create complex number re + im*i\n  Example: (complex 3 4) => 3 + 4i";
-    if (std.mem.eql(u8, name, "real")) return "(real z)  Real part of complex number";
-    if (std.mem.eql(u8, name, "imag")) return "(imag z)  Imaginary part of complex number";
-    if (std.mem.eql(u8, name, "conj")) return "(conj z)  Complex conjugate";
-    if (std.mem.eql(u8, name, "magnitude")) return "(magnitude z)  Absolute value |z| of complex number";
-    if (std.mem.eql(u8, name, "arg")) return "(arg z)  Argument (angle) of complex number in radians";
-
-    // Matrix
-    if (std.mem.eql(u8, name, "matrix")) return "(matrix (row1) (row2) ...)  Create matrix from rows\n  Example: (matrix (1 2) (3 4)) => 2x2 matrix";
-    if (std.mem.eql(u8, name, "det")) return "(det M)  Determinant of matrix M";
-    if (std.mem.eql(u8, name, "inv")) return "(inv M)  Inverse of matrix M";
-    if (std.mem.eql(u8, name, "transpose")) return "(transpose M)  Transpose of matrix M";
-    if (std.mem.eql(u8, name, "matmul")) return "(matmul A B)  Matrix multiplication A * B";
-    if (std.mem.eql(u8, name, "eigenvalues")) return "(eigenvalues M)  Eigenvalues of 2x2 matrix M";
-    if (std.mem.eql(u8, name, "linsolve")) return "(linsolve A b)  Solve linear system Ax = b";
-
-    // Vector
-    if (std.mem.eql(u8, name, "vector")) return "(vector x y z ...)  Create vector\n  Example: (vector 1 2 3) => ⟨1, 2, 3⟩";
-    if (std.mem.eql(u8, name, "dot")) return "(dot v1 v2)  Dot product of vectors";
-    if (std.mem.eql(u8, name, "cross")) return "(cross v1 v2)  Cross product of 3D vectors";
-    if (std.mem.eql(u8, name, "norm")) return "(norm v)  Euclidean norm (length) of vector";
-
-    // Vector calculus
-    if (std.mem.eql(u8, name, "gradient") or std.mem.eql(u8, name, "grad")) return "(gradient f vars)  Gradient of scalar field f\n  Example: (gradient (+ (^ x 2) (^ y 2)) (vector x y))";
-    if (std.mem.eql(u8, name, "divergence")) return "(divergence F vars)  Divergence of vector field F";
-    if (std.mem.eql(u8, name, "curl")) return "(curl F vars)  Curl of 3D vector field F";
-    if (std.mem.eql(u8, name, "laplacian")) return "(laplacian f vars)  Laplacian of scalar field f";
-
-    // Rewrite rules
-    if (std.mem.eql(u8, name, "rule")) return "(rule pattern replacement)  Define rewrite rule with ?vars\n  Example: (rule (double ?x) (* 2 ?x))";
-    if (std.mem.eql(u8, name, "rewrite")) return "(rewrite expr)  Apply all defined rules to expr";
-
-    // Special forms
-    if (std.mem.eql(u8, name, "define")) return "(define name value) or (define (name args) body)\n  Define a variable or function\n  Example: (define (square x) (* x x))";
-    if (std.mem.eql(u8, name, "lambda")) return "(lambda (args) body)  Create anonymous function\n  Example: ((lambda (x) (* x x)) 5) => 25";
-    if (std.mem.eql(u8, name, "let")) return "(let ((var val) ...) body)  Local bindings\n  Example: (let ((a 3) (b 4)) (+ a b)) => 7";
-    if (std.mem.eql(u8, name, "if")) return "(if cond then [else])  Conditional\n  Example: (if (> x 0) x (- x))";
-    if (std.mem.eql(u8, name, "sum")) return "(sum var start end body)  Summation\n  Example: (sum i 1 5 i) => 15";
-    if (std.mem.eql(u8, name, "product")) return "(product var start end body)  Product notation\n  Example: (product i 1 5 i) => 120";
-
-    // List operations
-    if (std.mem.eql(u8, name, "list")) return "(list a b c ...)  Create a list";
-    if (std.mem.eql(u8, name, "car")) return "(car lst)  First element of list";
-    if (std.mem.eql(u8, name, "cdr")) return "(cdr lst)  Rest of list (all but first)";
-    if (std.mem.eql(u8, name, "map")) return "(map fn lst)  Apply fn to each element\n  Example: (map (lambda (x) (* x 2)) (list 1 2 3))";
-    if (std.mem.eql(u8, name, "filter")) return "(filter fn lst)  Keep elements where fn returns true";
-    if (std.mem.eql(u8, name, "reduce")) return "(reduce fn init lst)  Fold list with fn";
-    if (std.mem.eql(u8, name, "range")) return "(range n) or (range start end [step])  Generate number list";
-
-    // Plotting
-    if (std.mem.eql(u8, name, "plot-ascii")) return "(plot-ascii expr xmin xmax [height width])  ASCII plot of expr";
-    if (std.mem.eql(u8, name, "plot-svg")) return "(plot-svg expr xmin xmax [height width])  SVG plot of expr";
-
-    // Assumptions
-    if (std.mem.eql(u8, name, "assume")) return "(assume var property)  Set assumption on variable\n  Properties: positive, negative, nonzero, integer, real, even, odd";
-    if (std.mem.eql(u8, name, "is?")) return "(is? var property)  Check if assumption holds";
-
-    // Export
-    if (std.mem.eql(u8, name, "latex")) return "(latex expr)  Convert expression to LaTeX string";
-
+    inline for (docs_table.docs) |doc| {
+        const text = comptime blk: {
+            var t: []const u8 = doc.signature ++ "\n  " ++ doc.summary ++ ".";
+            if (doc.example) |ex| {
+                t = t ++ "\n  Example: " ++ ex;
+            }
+            break :blk t;
+        };
+        if (std.mem.eql(u8, doc.name, name)) return text;
+    }
     return null;
 }
 
@@ -271,7 +113,7 @@ fn countParens(input: []const u8) i32 {
 /// Find completions for a partial function name
 fn findCompletions(partial: []const u8, allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
     var completions: std.ArrayList([]const u8) = .empty;
-    for (builtin_names) |name| {
+    for (allNames()) |name| {
         if (partial.len == 0 or std.mem.startsWith(u8, name, partial)) {
             try completions.append(allocator, name);
         }
@@ -394,7 +236,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
                 } else {
                     // Check if it's a valid function name
                     var found = false;
-                    for (builtin_names) |name| {
+                    for (allNames()) |name| {
                         if (std.mem.eql(u8, name, func_name)) {
                             found = true;
                             break;
