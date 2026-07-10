@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1] - 2026-07-10
+
+### Added
+- `lispium fmt` accepts directories and recurses into their `.lspm` files
+  (skipping hidden directories, `zig-out`, and `node_modules`), so
+  `lispium fmt -w .` formats a whole project.
+
 ## [0.6.0] - 2026-07-10
 
 ### Added

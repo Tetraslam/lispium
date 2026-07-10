@@ -170,7 +170,7 @@ every builtin with signatures.
 ## Formatting
 
 ```bash
-lispium fmt -w file.lspm     # canonical style, see STYLE.md
+lispium fmt -w .             # canonical style, see STYLE.md (dirs recurse)
 lispium fmt --check ...      # CI mode
 ```
 

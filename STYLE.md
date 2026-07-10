@@ -76,6 +76,7 @@ the start or end of the file.
 lispium fmt file.lspm          # print formatted source to stdout
 lispium fmt -w file.lspm ...   # rewrite files in place
 lispium fmt --check file.lspm  # exit 1 if anything is unformatted (CI)
+lispium fmt -w .               # directories recurse into their .lspm files
 ```
 
 Editors get the same formatter through the LSP: `:format` in Helix,

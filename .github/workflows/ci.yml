@@ -45,9 +45,9 @@ jobs:
       - name: Run tests
         run: zig build test --summary all
 
-      - name: Check cookbook formatting
+      - name: Check formatting
         if: runner.os != 'Windows'
-        run: ./zig-out/bin/lispium fmt --check cookbook/*.lspm
+        run: ./zig-out/bin/lispium fmt --check .
 
       - name: Run cookbook examples
         if: runner.os != 'Windows'

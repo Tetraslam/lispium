@@ -88,10 +88,28 @@ fn mainImpl(init: std.process.Init) !void {
                 }
             }
             if (files.items.len == 0) {
-                try stderr.print("Usage: lispium fmt [-w|--check] <file.lspm...>\n", .{});
+                try stderr.print("Usage: lispium fmt [-w|--check] <file.lspm|dir...>\n", .{});
                 std.process.exit(1);
             }
-            const ok = try formatFiles(allocator, io, files.items, write_in_place, check_only, stdout, stderr);
+
+            // Expand directory arguments into their .lspm files (recursive)
+            var expanded: std.ArrayList([]const u8) = .empty;
+            var owned_paths: std.ArrayList([]u8) = .empty;
+            defer {
+                for (owned_paths.items) |p| allocator.free(p);
+                owned_paths.deinit(allocator);
+                expanded.deinit(allocator);
+            }
+            for (files.items) |path| {
+                if (try collectLspmFiles(allocator, io, path, &owned_paths, &expanded, stderr)) continue;
+                try expanded.append(allocator, path);
+            }
+            if (expanded.items.len == 0) {
+                try stderr.print("No .lspm files found\n", .{});
+                std.process.exit(1);
+            }
+
+            const ok = try formatFiles(allocator, io, expanded.items, write_in_place, check_only, stdout, stderr);
             if (!ok) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "bench")) {
@@ -127,6 +145,47 @@ fn mainImpl(init: std.process.Init) !void {
     }
 
     try printUsage(stdout);
+}
+
+/// If `path` is a directory, recursively collects the .lspm files inside it
+/// (skipping hidden directories and build output) and returns true.
+/// Returns false when `path` is not a directory.
+fn collectLspmFiles(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    owned_paths: *std.ArrayList([]u8),
+    out: *std.ArrayList([]const u8),
+    stderr: anytype,
+) !bool {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.NotDir => return false,
+        else => {
+            try stderr.print("Error opening '{s}': {}\n", .{ dir_path, err });
+            return true; // handled (as an error); don't treat as a file
+        },
+    };
+    defer dir.close(io);
+
+    var walker = dir.walkSelectively(allocator) catch return error.OutOfMemory;
+    defer walker.deinit();
+
+    while (try walker.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            // Skip hidden directories and build artifacts
+            const skip = std.mem.startsWith(u8, entry.basename, ".") or
+                std.mem.eql(u8, entry.basename, "zig-out") or
+                std.mem.eql(u8, entry.basename, "node_modules");
+            if (!skip) try walker.enter(io, entry);
+            continue;
+        }
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.basename, ".lspm")) {
+            const full = try std.fs.path.join(allocator, &.{ dir_path, entry.path });
+            try owned_paths.append(allocator, full);
+            try out.append(allocator, full);
+        }
+    }
+    return true;
 }
 
 /// Formats each file. Without flags the result is printed to stdout;
