@@ -8,6 +8,6 @@ pkgbase = lispium-bin
 	provides = lispium
 	conflicts = lispium
 	source_x86_64 = lispium-bin-0.5.1.tar.gz::https://github.com/Tetraslam/lispium/releases/download/v0.5.1/lispium-linux-x86_64.tar.gz
-	sha256sums_x86_64 = ee7983c6d1e6c32d5f368d236c866b552584af4e2e30771120a49f78f0e64556
+	sha256sums_x86_64 = c65d6a489f0b82532d7cf6c1f08860372b4799d7764aef7c001784e11908dfde
 
 pkgname = lispium-bin
