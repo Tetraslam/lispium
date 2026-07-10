@@ -1,7 +1,7 @@
 ; Lispium Cookbook
 ; ================
 ; A collection of examples demonstrating Lispium's capabilities
-;
+; 
 ; Files in this cookbook:
 ; -----------------------
 ; calculus.lisp      - Differentiation, integration, Taylor series, limits
@@ -15,7 +15,7 @@
 ; lambda.lisp        - Functions, recursion, higher-order functions
 ; advanced.lisp      - Special functions, transforms, interpolation
 ; plotting.lisp      - ASCII and SVG plotting examples
-;
+; 
 ; Quick Reference
 ; ---------------
 ; Arithmetic:       + - * / ^ mod
@@ -30,7 +30,7 @@
 ; Interpolation:    lagrange newton-interp
 ; Root Finding:     newton-raphson bisection
 ; Linear Algebra:   vector dot cross norm matrix det transpose trace
-;                   matmul inv eigenvalues eigenvectors linsolve lu charpoly
+; matmul inv eigenvalues eigenvectors linsolve lu charpoly
 ; Vector Calculus:  gradient divergence curl laplacian
 ; Tensors:          tensor tensor-rank tensor-contract tensor-product
 ; Number Theory:    gcd lcm modpow prime? factorize totient extgcd crt
@@ -38,7 +38,7 @@
 ; Statistics:       mean variance stddev median min max
 ; Cont. Fractions:  to-cf from-cf cf-rational cf-convergent
 ; Lists:            car cdr cons list length nth map filter reduce
-;                   append reverse range
+; append reverse range
 ; Transforms:       fourier laplace inv-laplace
 ; Boolean:          and or not xor implies
 ; Complex:          complex real imag conj magnitude arg
@@ -51,45 +51,44 @@
 ; Plotting:         plot-ascii plot-svg plot-points
 ; Step-by-step:     diff-steps integrate-steps simplify-steps solve-steps
 ; Export:           latex
-;
+; 
 ; Getting Started
 ; ---------------
 ; Run the REPL: zig build run -- repl
 ; Try: (+ 1 2)
 ; Try: (diff (^ x 3) x)
 ; Try: (simplify (+ x x))
-;
+; 
 ; For help in REPL, type: help
-;
+; 
 ; Vectors & Matrices Quick Start
 ; ------------------------------
 ; Vectors use the vector function:
-;   (vector 1 2 3)                    => ⟨1, 2, 3⟩
-;   (dot (vector 1 2) (vector 3 4))   => 11
-;   (cross (vector 1 0 0) (vector 0 1 0)) => ⟨0, 0, 1⟩
-;   (norm (vector 3 4))               => 5
-;
+; (vector 1 2 3)                    => ⟨1, 2, 3⟩
+; (dot (vector 1 2) (vector 3 4))   => 11
+; (cross (vector 1 0 0) (vector 0 1 0)) => ⟨0, 0, 1⟩
+; (norm (vector 3 4))               => 5
+; 
 ; Matrices use the matrix function with rows:
-;   (matrix (1 2) (3 4))              ; 2x2 matrix
-;   (matrix (a b c) (d e f))          ; 2x3 symbolic matrix
-;   (det (matrix (1 2) (3 4)))        => -2
-;   (matmul A B)                      ; matrix multiplication
-;   (linsolve A b)                    ; solve Ax = b
-;
+; (matrix (1 2) (3 4))              ; 2x2 matrix
+; (matrix (a b c) (d e f))          ; 2x3 symbolic matrix
+; (det (matrix (1 2) (3 4)))        => -2
+; (matmul A B)                      ; matrix multiplication
+; (linsolve A b)                    ; solve Ax = b
+; 
 ; See linear_algebra.lspm for more examples
-;
+; 
 ; Numeric Evaluation
 ; ------------------
 ; Use evalf or N to evaluate symbolic constants:
-;   (evalf pi)                        => 3.141592653589793
-;   (N e)                             => 2.718281828459045
-;   (evalf (sin pi))                  => 0
-;   (evalf (+ pi e))                  => 5.859874482048838
-;
+; (evalf pi)                        => 3.141592653589793
+; (N e)                             => 2.718281828459045
+; (evalf (sin pi))                  => 0
+; (evalf (+ pi e))                  => 5.859874482048838
+; 
 ; Equation Solving
 ; ----------------
 ; solve accepts expr=0 form or equation syntax:
-;   (solve (- x 5) x)                 => 5   (x - 5 = 0)
-;   (solve (= x 5) x)                 => 5   (x = 5)
-;   (solve (= (* x x) 4) x)           => {2, -2}
-
+; (solve (- x 5) x)                 => 5   (x - 5 = 0)
+; (solve (= x 5) x)                 => 5   (x = 5)
+; (solve (= (* x x) 4) x)           => {2, -2}

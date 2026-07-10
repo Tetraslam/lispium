@@ -6,7 +6,7 @@
 ; Polynomials can be represented in two ways:
 ; 1. Symbolic: (+ (^ x 2) (* 2 x) 1) for x² + 2x + 1
 ; 2. Coefficient list: (coeffs 1 2 1) for x² + 2x + 1
-;    Coefficients are listed from highest degree to constant term
+; Coefficients are listed from highest degree to constant term
 
 ; Polynomial Division
 ; -------------------
@@ -53,4 +53,3 @@
 
 ; Collect like terms
 (collect (+ (* a x) (* b x) c) x)  ; => (a + b)x + c
-

@@ -12,4 +12,4 @@ indent = { tab-width = 2, unit = "  " }
 language-servers = ["lispium"]
 # Reuse the bundled tree-sitter scheme grammar for s-expression highlighting
 grammar = "scheme"
-auto-format = false
+auto-format = true

@@ -8,6 +8,7 @@ const Expr = @import("parser.zig").Expr;
 /// Implements Language Server Protocol over stdin/stdout using JSON-RPC 2.0
 
 const builtin_docs = @import("lsp/builtin_docs.zig");
+const formatter = @import("formatter.zig");
 const server_version = build_options.version;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -127,6 +128,8 @@ const Server = struct {
             return try self.handleHover(id, params);
         } else if (std.mem.eql(u8, method_str, "textDocument/completion")) {
             return try self.handleCompletion(id, params);
+        } else if (std.mem.eql(u8, method_str, "textDocument/formatting")) {
+            return try self.handleFormatting(id, params);
         }
 
         return null;
@@ -139,6 +142,7 @@ const Server = struct {
             \\  "capabilities": {{
             \\    "textDocumentSync": 1,
             \\    "hoverProvider": true,
+            \\    "documentFormattingProvider": true,
             \\    "completionProvider": {{
             \\      "triggerCharacters": ["("]
             \\    }}
@@ -199,6 +203,41 @@ const Server = struct {
             self.allocator.free(kv.value.content);
             self.allocator.free(kv.value.uri);
         }
+    }
+
+    /// Whole-document formatting via the canonical Lispium formatter.
+    fn handleFormatting(self: *Server, id: ?std.json.Value, params: ?std.json.Value) ![]const u8 {
+        const p = params orelse return try self.makeResponse(id, "null");
+        const text_doc = p.object.get("textDocument") orelse return try self.makeResponse(id, "null");
+        const uri = text_doc.object.get("uri") orelse return try self.makeResponse(id, "null");
+
+        const doc = self.documents.get(uri.string) orelse return try self.makeResponse(id, "null");
+
+        const formatted = formatter.format(self.allocator, doc.content) catch {
+            // Unbalanced input etc: decline to format rather than erroring
+            return try self.makeResponse(id, "null");
+        };
+        defer self.allocator.free(formatted);
+
+        if (std.mem.eql(u8, formatted, doc.content)) {
+            return try self.makeResponse(id, "[]");
+        }
+
+        // Replace the entire document (end position: one past the last line)
+        const line_count = std.mem.count(u8, doc.content, "\n") + 1;
+
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer buf.deinit();
+        try buf.writer.print(
+            "[{{\"range\": {{\"start\": {{\"line\": 0, \"character\": 0}}, \"end\": {{\"line\": {d}, \"character\": 0}}}}, \"newText\": ",
+            .{line_count},
+        );
+        try writeJsonString(&buf.writer, formatted);
+        try buf.writer.writeAll("}]");
+
+        const edits = try buf.toOwnedSlice();
+        defer self.allocator.free(edits);
+        return try self.makeResponse(id, edits);
     }
 
     fn handleHover(self: *Server, id: ?std.json.Value, params: ?std.json.Value) ![]const u8 {
@@ -399,4 +438,26 @@ fn escapeJson(input: []const u8, buf: []u8) []const u8 {
         }
     }
     return buf[0..i];
+}
+
+/// Writes a JSON-escaped string literal (with surrounding quotes).
+fn writeJsonString(writer: *std.Io.Writer, text: []const u8) !void {
+    try writer.writeAll("\"");
+    for (text) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => {
+                if (c < 0x20) {
+                    try writer.print("\\u{x:0>4}", .{c});
+                } else {
+                    try writer.writeAll(&[_]u8{c});
+                }
+            },
+        }
+    }
+    try writer.writeAll("\"");
 }

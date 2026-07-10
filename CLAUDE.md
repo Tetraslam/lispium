@@ -25,7 +25,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 
 ```bash
 zig build run -- repl          # Run interactive REPL
-zig build test                 # Run all 501 tests
+zig build test                 # Run all 515 tests
 zig build test --summary all   # Run tests with verbose output showing names
 zig build -Doptimize=ReleaseSafe  # Build optimized release binary
 ```
@@ -54,6 +54,7 @@ Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with
 | `symbolic.zig` | Core CAS engine |
 | `evaluator.zig` | Expression evaluator & special forms |
 | `registry.zig` | Single source of truth for builtin registration |
+| `formatter.zig` | Canonical source formatter (see STYLE.md) |
 | `repl.zig` | Interactive shell |
 | `environment.zig` | Symbol table & assumptions |
 | `parser.zig` | Recursive descent parser |
@@ -957,7 +958,7 @@ which is assumption-aware via the environment):
 
 ## Test Organization
 
-Tests are organized in `src/tests/` with 501 tests across 38 files:
+Tests are organized in `src/tests/` with 515 tests across 39 files:
 
 | File | Tests | Coverage |
 |------|-------|----------|

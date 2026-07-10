@@ -17,6 +17,8 @@ cp queries/lispium/*.scm ~/.config/helix/runtime/queries/lispium/
 
 4. Verify: `hx --health lispium` (all queries should be green).
 
-Open any `.lspm` file; `Space + k` shows hover docs, completion triggers on `(`.
+Open any `.lspm` file; `Space + k` shows hover docs, completion triggers on `(`,
+and `:format` (or save, with `auto-format = true`) runs the canonical
+formatter (see STYLE.md in the repo root).
 Textobjects: `maf`/`mif` select around/inside `define`/`lambda` forms,
 `]f`/`[f` jump between them, `]c`/`[c` between comments.

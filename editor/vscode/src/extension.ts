@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { workspace, ExtensionContext, window } from 'vscode';
+import { workspace, ExtensionContext, window, commands } from 'vscode';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -100,7 +100,20 @@ export function activate(context: ExtensionContext) {
         outputChannel.appendLine('Language client started successfully');
     }).catch((err) => {
         outputChannel.appendLine(`Language client failed to start: ${err}`);
+        window.showErrorMessage(
+            `Lispium language server failed to start (looked for '${serverPath}'). ` +
+            `Install it with 'uv tool install lispium' or set 'lispium.server.path'.`
+        );
     });
+
+    // Restart command: handy after upgrading the lispium binary
+    context.subscriptions.push(
+        commands.registerCommand('lispium.restartServer', async () => {
+            outputChannel.appendLine('Restarting language server...');
+            await client.restart();
+            outputChannel.appendLine('Language server restarted');
+        })
+    );
 
     context.subscriptions.push({
         dispose: () => {

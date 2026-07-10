@@ -167,6 +167,15 @@ every builtin with signatures.
 - `history`, `!!` (repeat last), `!n` (recall entry n)
 - Pretty printing: π, ⟨1, 2, 3⟩, x², √x, 3 + 4i, {2, -2}
 
+## Formatting
+
+```bash
+lispium fmt -w file.lspm     # canonical style, see STYLE.md
+lispium fmt --check ...      # CI mode
+```
+
+Editors format through the LSP (`:format` in Helix, format-on-save in VS Code).
+
 ## Tests
 
 ```bash
@@ -174,4 +183,4 @@ zig build test               # run the suite
 zig build test --summary all # verbose, shows test names
 ```
 
-504 tests, 0 memory leaks.
+515 tests, 0 memory leaks.

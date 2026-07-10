@@ -45,12 +45,11 @@
 (plot-points (list (vector 0 0) (vector 1 1) (vector 2 4) (vector 3 9)))
 
 ; Parabola points
-(plot-points (list
-  (vector -2 4)
-  (vector -1 1)
-  (vector 0 0)
-  (vector 1 1)
-  (vector 2 4)))
+(plot-points (list (vector -2 4)
+                   (vector -1 1)
+                   (vector 0 0)
+                   (vector 1 1)
+                   (vector 2 4)))
 
 ; ================================
 ; Step-by-Step Solutions

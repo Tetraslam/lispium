@@ -2,7 +2,7 @@
   "name": "lispium",
   "displayName": "Lispium",
   "description": "Language support for Lispium - A Symbolic Computer Algebra System",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "publisher": "tetraslam",
   "repository": {
     "type": "git",
@@ -73,7 +73,19 @@
           "description": "Traces the communication between VS Code and the language server."
         }
       }
-    }
+    },
+    "configurationDefaults": {
+      "[lispium]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "tetraslam.lispium"
+      }
+    },
+    "commands": [
+      {
+        "command": "lispium.restartServer",
+        "title": "Lispium: Restart Language Server"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",

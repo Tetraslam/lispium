@@ -3,36 +3,36 @@
 
 ; Creating Complex Numbers
 ; ------------------------
-(complex 3 4)                ; => 3 + 4i
-(complex 1 0)                ; => 1 (real number)
-(complex 0 1)                ; => i (imaginary unit)
-(complex -2 5)               ; => -2 + 5i
+(complex 3 4)  ; => 3 + 4i
+(complex 1 0)  ; => 1 (real number)
+(complex 0 1)  ; => i (imaginary unit)
+(complex -2 5)  ; => -2 + 5i
 
 ; Extracting Parts
 ; ----------------
-(real (complex 3 4))         ; => 3
-(imag (complex 3 4))         ; => 4
-(real (complex 5 -2))        ; => 5
-(imag (complex 5 -2))        ; => -2
+(real (complex 3 4))  ; => 3
+(imag (complex 3 4))  ; => 4
+(real (complex 5 -2))  ; => 5
+(imag (complex 5 -2))  ; => -2
 
 ; Complex Conjugate
 ; -----------------
 ; Conjugate of a + bi is a - bi
-(conj (complex 3 4))         ; => 3 - 4i
-(conj (complex -2 5))        ; => -2 - 5i
+(conj (complex 3 4))  ; => 3 - 4i
+(conj (complex -2 5))  ; => -2 - 5i
 
 ; Magnitude (Absolute Value)
 ; --------------------------
 ; |a + bi| = sqrt(a² + b²)
-(magnitude (complex 3 4))    ; => 5  (sqrt(9 + 16) = sqrt(25) = 5)
-(magnitude (complex 5 12))   ; => 13 (sqrt(25 + 144) = sqrt(169) = 13)
+(magnitude (complex 3 4))  ; => 5  (sqrt(9 + 16) = sqrt(25) = 5)
+(magnitude (complex 5 12))  ; => 13 (sqrt(25 + 144) = sqrt(169) = 13)
 
 ; Argument (Phase Angle)
 ; ----------------------
 ; arg(a + bi) = atan2(b, a) in radians
-(arg (complex 1 1))          ; => π/4 (≈ 0.785)
-(arg (complex 0 1))          ; => π/2 (≈ 1.571)
-(arg (complex -1 0))         ; => π   (≈ 3.142)
+(arg (complex 1 1))  ; => π/4 (≈ 0.785)
+(arg (complex 0 1))  ; => π/2 (≈ 1.571)
+(arg (complex -1 0))  ; => π   (≈ 3.142)
 
 ; Arithmetic Operations
 ; ---------------------
@@ -72,4 +72,3 @@
 ; Square roots of 1: ±1
 ; Cube roots of 1: 1, e^(2πi/3), e^(4πi/3)
 ; Fourth roots of 1: 1, i, -1, -i
-

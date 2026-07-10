@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0] - 2026-07-10
+
+### Added
+- Canonical code style (STYLE.md) and `lispium fmt` formatter: 80-column,
+  2-space indent, comment- and literal-preserving, idempotent. Flags:
+  `-w` (in place), `--check` (CI).
+- LSP `textDocument/formatting` so Helix `:format` and VS Code
+  format-on-save use the same formatter.
+- VS Code extension: format-on-save enabled by default for Lispium files,
+  a "Restart Language Server" command, and a visible error when the server
+  binary can't be found.
+- Helix config ships with `auto-format = true`.
+- Cookbook reformatted to canonical style (verified output-identical);
+  CI enforces `fmt --check` on the cookbook.
+
 ## [0.5.1] - 2026-07-10
 
 ### Changed

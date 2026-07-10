@@ -6,32 +6,32 @@
 ; Use (assume var property) to declare properties of variables
 
 ; Positivity assumptions
-(assume x positive)          ; x > 0
-(assume y negative)          ; y < 0
-(assume z nonzero)           ; z ≠ 0
+(assume x positive)  ; x > 0
+(assume y negative)  ; y < 0
+(assume z nonzero)  ; z ≠ 0
 
 ; Number type assumptions
-(assume n integer)           ; n is an integer
-(assume m real)              ; m is a real number
-(assume k even)              ; k is an even integer
-(assume j odd)               ; j is an odd integer
+(assume n integer)  ; n is an integer
+(assume m real)  ; m is a real number
+(assume k even)  ; k is an even integer
+(assume j odd)  ; j is an odd integer
 
 ; Multiple assumptions on same variable
 (assume t positive)
-(assume t integer)           ; t is a positive integer
+(assume t integer)  ; t is a positive integer
 
 ; Querying Assumptions
 ; --------------------
 ; Use (is? var property) to check if an assumption holds
 
 (assume x positive)
-(is? x positive)             ; => true
-(is? x negative)             ; => false
-(is? x nonzero)              ; => true (positive implies nonzero)
+(is? x positive)  ; => true
+(is? x negative)  ; => false
+(is? x nonzero)  ; => true (positive implies nonzero)
 
 (assume n integer)
-(is? n integer)              ; => true
-(is? n real)                 ; => true (integers are real)
+(is? n integer)  ; => true
+(is? n real)  ; => true (integers are real)
 
 ; Assumptions in Simplification
 ; -----------------------------
@@ -74,4 +74,3 @@
 ; --------------------
 ; Currently assumptions persist for the session
 ; Restart REPL to clear all assumptions
-

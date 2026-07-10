@@ -1,6 +1,6 @@
 # Maintainer: Tetraslam <tetraslam@users.noreply.github.com>
 pkgname=lispium-bin
-pkgver=0.5.1
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="A Symbolic Computer Algebra System written in Zig"
 arch=('x86_64')
