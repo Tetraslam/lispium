@@ -90,6 +90,20 @@ fn getFunctionHelp(name: []const u8) ?[]const u8 {
 }
 
 /// Count parentheses to determine if expression is complete
+/// Appends one line to the history file, ignoring failures.
+fn appendHistory(io: std.Io, path: []const u8, line: []const u8) void {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only }) catch |err| switch (err) {
+        error.FileNotFound => std.Io.Dir.cwd().createFile(io, path, .{}) catch return,
+        else => return,
+    };
+    defer file.close(io);
+    const end = file.length(io) catch return;
+    var offset = end;
+    _ = file.writePositional(io, &.{line}, offset) catch return;
+    offset += line.len;
+    _ = file.writePositional(io, &.{"\n"}, offset) catch return;
+}
+
 fn countParens(input: []const u8) i32 {
     var depth: i32 = 0;
     var in_string = false;
@@ -144,11 +158,12 @@ fn getCurrentWord(input: []const u8) []const u8 {
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
-    return runWithFile(allocator, io, null);
+    return runWithFile(allocator, io, null, null);
 }
 
 /// Starts the REPL, optionally (load)ing a file into the session first.
-pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u8) !void {
+/// `home_dir` enables persistent history at ~/.lispium_history.
+pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u8, home_dir: ?[]const u8) !void {
     // Every evaluated input line is kept alive for the whole session:
     // parsed symbols are slices into these buffers, and anything stored in
     // the environment (defines, rules, lambdas) must remain valid.
@@ -163,6 +178,29 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
 
     // Initialize builtins (shared registry: single source of truth)
     try registry.installBuiltins(&env);
+
+    // Persistent history: load previous sessions so history/!!/!n work
+    // across restarts, and append this session's inputs
+    var history_path_buf: [512]u8 = undefined;
+    const history_path: ?[]const u8 = blk: {
+        const home = home_dir orelse break :blk null;
+        break :blk std.fmt.bufPrint(&history_path_buf, "{s}/.lispium_history", .{home}) catch null;
+    };
+    if (history_path) |hp| {
+        if (std.Io.Dir.cwd().readFileAlloc(io, hp, allocator, .limited(1024 * 1024))) |content| {
+            defer allocator.free(content);
+            var hist_lines = std.mem.splitScalar(u8, content, '\n');
+            while (hist_lines.next()) |hline| {
+                const trimmed_h = std.mem.trim(u8, hline, " \t\r");
+                if (trimmed_h.len == 0) continue;
+                const owned = allocator.dupe(u8, trimmed_h) catch continue;
+                session_inputs.append(allocator, owned) catch {
+                    allocator.free(owned);
+                    continue;
+                };
+            }
+        } else |_| {}
+    }
 
     var stdout_writer: std.Io.File.Writer = .init(.stdout(), io, &.{});
     const stdout = &stdout_writer.interface;
@@ -366,6 +404,11 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
         const trimmed_input = std.mem.trim(u8, expr_buf.items, " \t\r\n");
         const input = try allocator.dupe(u8, trimmed_input);
         try session_inputs.append(allocator, input);
+
+        // Append to the persistent history file (best effort)
+        if (history_path) |hp| {
+            appendHistory(io, hp, input);
+        }
 
         var tokenizer = Tokenizer.init(input);
         var tokens: std.ArrayList([]const u8) = .empty;

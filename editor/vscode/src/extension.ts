@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFile } from 'child_process';
 import { workspace, ExtensionContext, window, commands } from 'vscode';
 import {
     LanguageClient,
@@ -112,6 +113,28 @@ export function activate(context: ExtensionContext) {
             outputChannel.appendLine('Restarting language server...');
             await client.restart();
             outputChannel.appendLine('Language server restarted');
+        })
+    );
+
+    // Run the current .lspm file and show output
+    const runChannel = window.createOutputChannel('Lispium Run');
+    context.subscriptions.push(
+        commands.registerCommand('lispium.runFile', async () => {
+            const editor = window.activeTextEditor;
+            if (!editor || !editor.document.fileName.endsWith('.lspm')) {
+                window.showWarningMessage('Open a .lspm file to run it.');
+                return;
+            }
+            await editor.document.save();
+            const file = editor.document.fileName;
+            runChannel.clear();
+            runChannel.show(true);
+            runChannel.appendLine(`$ lispium run ${file}`);
+            execFile(serverPath, ['run', file], { timeout: 30000 }, (err, stdout, stderr) => {
+                if (stdout) runChannel.append(stdout);
+                if (stderr) runChannel.append(stderr);
+                if (err && !stdout && !stderr) runChannel.appendLine(`error: ${err.message}`);
+            });
         })
     );
 

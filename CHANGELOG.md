@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.8.0] - 2026-07-11
+
+The tooling release.
+
+### Added
+- **Documentation site**: `lispium docs [name|--html]` renders the shared
+  docs table; the generated site (with search) is served by GitHub Pages
+  at https://tetraslam.github.io/lispium/ and CI-checked for freshness.
+- **Browser playground**: `zig build wasm` builds a 530 KB WebAssembly
+  module (persistent environment, captured print output); the playground
+  at /playground/ runs entirely client-side.
+- **Stack traces**: evaluation errors print the user-function call chain;
+  lambdas carry their define-time names; tail calls rename the reused
+  frame; `try` discards frames from the failed branch.
+- **Quartic solve**: Ferrari's method via the resolvent cubic, with the
+  biquadratic shortcut and full complex roots (`x^4 + 1 = 0` included).
+- **LSP**: go-to-definition for `define`/`defmacro` and document symbols.
+- **CLI**: `lispium run --watch` (rerun on change) and `--time`;
+  `lispium fmt -` formats stdin; `lispium completions bash|zsh|fish`;
+  a man page (man/lispium.1).
+- **REPL**: persistent history at ~/.lispium_history (history/!!/!n work
+  across sessions).
+- **Jupyter kernel**: `pip install lispium[jupyter]` then
+  `python -m lispium.kernel install` — a persistent-REPL kernel.
+- **VS Code**: "Lispium: Run Current File" command with an output panel.
+
+### Fixed
+- Latent use-after-free in the tail-call trampoline's frame bookkeeping.
+
 ## [0.7.0] - 2026-07-11
 
 The language release: Lispium graduates from expression evaluator to a

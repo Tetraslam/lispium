@@ -2,7 +2,7 @@
   "name": "lispium",
   "displayName": "Lispium",
   "description": "Language support for Lispium - A Symbolic Computer Algebra System",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "tetraslam",
   "repository": {
     "type": "git",
@@ -84,8 +84,21 @@
       {
         "command": "lispium.restartServer",
         "title": "Lispium: Restart Language Server"
+      },
+      {
+        "command": "lispium.runFile",
+        "title": "Lispium: Run Current File"
       }
-    ]
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "lispium.runFile",
+          "when": "resourceLangId == lispium",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",

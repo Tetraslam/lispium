@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lispium"
-version = "0.7.0"
+version = "0.8.0"
 description = "A Symbolic Computer Algebra System"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,6 +28,9 @@ requires-python = ">=3.8"
 Homepage = "https://github.com/Tetraslam/lispium"
 Repository = "https://github.com/Tetraslam/lispium"
 Issues = "https://github.com/Tetraslam/lispium/issues"
+
+[project.optional-dependencies]
+jupyter = ["ipykernel>=6", "jupyter_client>=8"]
 
 [project.scripts]
 lispium = "lispium.cli:main"

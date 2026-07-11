@@ -41,7 +41,7 @@ ad - bc
 - **Number Theory** - primes, factorization, Chinese Remainder Theorem
 - **And more** - quaternions, finite fields, Laplace transforms, plotting
 
-[Cookbook](cookbook/) · [Full function reference](CLAUDE.md)
+[Playground](https://tetraslam.github.io/lispium/playground/) · [Function reference](https://tetraslam.github.io/lispium/) · [Cookbook](cookbook/)
 
 ## Features
 
@@ -188,6 +188,18 @@ lispium fmt --check .        # CI mode
 ```
 
 Editors format through the LSP (`:format` in Helix, format-on-save in VS Code).
+
+## Tooling
+
+- `lispium repl [file]` — REPL with persistent history, `_`, `?func` docs
+- `lispium run --watch --time` — scripts with live reload and timing
+- `lispium test` — assert-based test runner for `*_test.lspm`
+- `lispium docs [name|--html]` — reference in the terminal or as a site
+- `lispium fmt` / `lispium completions <shell>` / `man man/lispium.1`
+- LSP (`lispium lsp`): hover, completion, diagnostics, formatting,
+  go-to-definition, outline — used by the VS Code extension and Helix
+- Jupyter: `pip install lispium[jupyter]`, then `python -m lispium.kernel install`
+- Errors show call stacks: `call stack: inner <- middle <- outer`
 
 ## Tests
 

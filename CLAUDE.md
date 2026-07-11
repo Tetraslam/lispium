@@ -844,6 +844,7 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
 - Linear: `ax + b = 0` → `x = -b/a`
 - Quadratic: `ax² + bx + c = 0` → quadratic formula (includes complex roots)
 - Cubic: `ax³ + bx² + cx + d = 0` → Cardano / trigonometric method
+- Quartic: `ax⁴ + ... + e = 0` → Ferrari via the resolvent cubic
 - Contradictions (e.g. `5 = 0`) return the symbol `no-solution`; identities return `all`
 
 ### Polynomial Operations

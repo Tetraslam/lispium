@@ -1,0 +1,64 @@
+.TH LISPIUM 1 "2026" "lispium" "User Commands"
+.SH NAME
+lispium \- symbolic computer algebra system with a lisp syntax
+.SH SYNOPSIS
+.B lispium
+.I command
+.RI [ options ]
+.RI [ arguments ]
+.SH DESCRIPTION
+Lispium is a symbolic CAS written in pure Zig: exact rationals, calculus,
+equation solving, linear algebra, units, macros, and an interactive lisp
+with tail-call optimization. Programs are prefix S-expressions in
+.B .lspm
+files.
+.SH COMMANDS
+.TP
+.B repl \fR[\fIfile.lspm\fR]
+Start the interactive REPL, optionally preloading a file. Multi-line input
+continues until parentheses balance; \fB_\fR holds the last result;
+\fBhistory\fR, \fB!!\fR, and \fB!n\fR recall inputs; \fB?func\fR shows
+documentation.
+.TP
+.B eval \fI"expr"\fR | \fB-\fR
+Evaluate one or more expressions (\fB-\fR reads from standard input).
+Exits nonzero on error.
+.TP
+.B run \fR[\fB--watch\fR] [\fB--time\fR] \fIfile.lspm\fR [\fIargs\fR...]
+Run a source file. \fB--watch\fR reruns on change; \fB--time\fR reports the
+total wall time; extra arguments are available via \fB(args)\fR. Files may
+start with \fB#!/usr/bin/env -S lispium run\fR.
+.TP
+.B fmt \fR[\fB--check\fR|\fB--stdout\fR] [\fIpaths\fR...]
+Format source to the canonical style (STYLE.md) in place. Directories
+recurse; \fB-\fR formats stdin to stdout; no paths means the current
+directory.
+.TP
+.B test \fR[\fIdir\fR|\fIfiles\fR...]
+Run \fB*_test.lspm\fR files (assert-based) and report ok/FAIL per file.
+.TP
+.B docs \fR[\fIname\fR|\fB--html\fR]
+Builtin reference: list all names, describe one, or emit the static
+reference site.
+.TP
+.B completions \fIbash\fR|\fIzsh\fR|\fIfish\fR
+Print a shell completion script.
+.TP
+.B lsp
+Start the language server (hover, completion, diagnostics, formatting,
+go-to-definition, document symbols).
+.TP
+.B bench \fR[\fB--plain\fR|\fB--json\fR|\fB--quick\fR]
+Run the benchmark suite.
+.SH EXAMPLES
+.nf
+lispium eval "(diff (^ x 3) x)"
+lispium eval "(+ 1/3 1/6)"
+lispium run --time script.lspm arg1
+lispium fmt --check .
+lispium repl mylib.lspm
+.fi
+.SH SEE ALSO
+Documentation: https://tetraslam.github.io/lispium/
+.br
+Source: https://github.com/Tetraslam/lispium

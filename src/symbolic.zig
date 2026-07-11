@@ -2612,6 +2612,9 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
         } else if (coeffs.len == 4 and coeffs[3] != 0) {
             // Cubic: a*x^3 + b*x^2 + c*x + d = 0
             return try cubicRoots(coeffs[3], coeffs[2], coeffs[1], coeffs[0], allocator);
+        } else if (coeffs.len == 5 and coeffs[4] != 0) {
+            // Quartic: Ferrari's method via the resolvent cubic
+            return try quarticRoots(coeffs[4], coeffs[3], coeffs[2], coeffs[1], coeffs[0], allocator);
         }
     }
 
@@ -2874,6 +2877,114 @@ pub fn cubicRoots(a3: f64, b3: f64, c3: f64, d3: f64, allocator: std.mem.Allocat
             const rep = snapRoot(-(u + v) / 2 + shift);
             solutions.append(allocator, try makeNumber(allocator, rep)) catch return SimplifyError.OutOfMemory;
             solutions.append(allocator, try makeNumber(allocator, rep)) catch return SimplifyError.OutOfMemory;
+        }
+    }
+
+    const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
+    result.* = .{ .list = solutions };
+    return result;
+}
+
+/// Roots of a*x^4 + b*x^3 + c*x^2 + d*x + e = 0 via Ferrari's method,
+/// returned as a (solutions ...) expression (real and complex roots).
+pub fn quarticRoots(a4: f64, b4: f64, c4: f64, d4: f64, e4: f64, allocator: std.mem.Allocator) SimplifyError!*Expr {
+    // Depressed quartic y^4 + p y^2 + q y + r with x = y - b/(4a)
+    const shift = -b4 / (4 * a4);
+    const a2 = a4 * a4;
+    const b2 = b4 * b4;
+    const p = (8 * a4 * c4 - 3 * b2) / (8 * a2);
+    const q = (b2 * b4 - 4 * a4 * b4 * c4 + 8 * a2 * d4) / (8 * a2 * a4);
+    const r = (-3 * b2 * b2 + 256 * a2 * a4 * e4 - 64 * a2 * b4 * d4 + 16 * a4 * b2 * c4) /
+        (256 * a2 * a2);
+
+    var solutions: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (solutions.items) |s| {
+            s.deinit(allocator);
+            allocator.destroy(s);
+        }
+        solutions.deinit(allocator);
+    }
+    const list_op = try makeSymbol(allocator, "solutions");
+    solutions.append(allocator, list_op) catch return SimplifyError.OutOfMemory;
+
+    if (@abs(q) < 1e-12) {
+        // Biquadratic: y^4 + p y^2 + r = 0 -> quadratic in y^2
+        const disc = p * p / 4 - r;
+        if (disc >= 0) {
+            const sq = @sqrt(disc);
+            for ([2]f64{ -p / 2 + sq, -p / 2 - sq }) |z| {
+                if (z >= 0) {
+                    const y = @sqrt(z);
+                    solutions.append(allocator, try makeNumber(allocator, snapRoot(y + shift))) catch return SimplifyError.OutOfMemory;
+                    solutions.append(allocator, try makeNumber(allocator, snapRoot(-y + shift))) catch return SimplifyError.OutOfMemory;
+                } else {
+                    const im = @sqrt(-z);
+                    solutions.append(allocator, try makeComplex(allocator, snapRoot(shift), snapRoot(im))) catch return SimplifyError.OutOfMemory;
+                    solutions.append(allocator, try makeComplex(allocator, snapRoot(shift), snapRoot(-im))) catch return SimplifyError.OutOfMemory;
+                }
+            }
+        } else {
+            // Complex z = -p/2 +- i sqrt(-disc): the four roots are the
+            // (+-) complex square roots of z and its conjugate
+            const re = -p / 2;
+            const im = @sqrt(-disc);
+            const mag = std.math.pow(f64, re * re + im * im, 0.25);
+            const theta = std.math.atan2(im, re) / 2;
+            const yr = mag * @cos(theta);
+            const yi = mag * @sin(theta);
+            solutions.append(allocator, try makeComplex(allocator, snapRoot(yr + shift), snapRoot(yi))) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeComplex(allocator, snapRoot(-yr + shift), snapRoot(-yi))) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeComplex(allocator, snapRoot(yr + shift), snapRoot(-yi))) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeComplex(allocator, snapRoot(-yr + shift), snapRoot(yi))) catch return SimplifyError.OutOfMemory;
+        }
+        const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
+        result.* = .{ .list = solutions };
+        return result;
+    }
+
+    // Resolvent cubic: 8 m^3 + 8 p m^2 + (2 p^2 - 8 r) m - q^2 = 0.
+    // Any real root m > 0 lets the quartic split into two quadratics.
+    const res = try cubicRoots(8, 8 * p, 2 * p * p - 8 * r, -q * q, allocator);
+    defer {
+        res.deinit(allocator);
+        allocator.destroy(res);
+    }
+    var m: f64 = 0;
+    var found = false;
+    if (res.* == .list) {
+        for (res.list.items[1..]) |root| {
+            if (root.* == .number and root.number > 1e-12) {
+                m = root.number;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
+        result.* = .{ .list = solutions };
+        return result;
+    }
+
+    // y^2 +- sqrt(2m) y + (p/2 + m -+ q/(2 sqrt(2m))) = 0
+    const s2m = @sqrt(2 * m);
+    const quads = [2][2]f64{
+        .{ s2m, p / 2 + m - q / (2 * s2m) },
+        .{ -s2m, p / 2 + m + q / (2 * s2m) },
+    };
+    for (quads) |quad| {
+        const qb = quad[0];
+        const qc = quad[1];
+        const disc = qb * qb - 4 * qc;
+        if (disc >= 0) {
+            const sq = @sqrt(disc);
+            solutions.append(allocator, try makeNumber(allocator, snapRoot((-qb + sq) / 2 + shift))) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeNumber(allocator, snapRoot((-qb - sq) / 2 + shift))) catch return SimplifyError.OutOfMemory;
+        } else {
+            const im = @sqrt(-disc) / 2;
+            solutions.append(allocator, try makeComplex(allocator, snapRoot(-qb / 2 + shift), snapRoot(im))) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeComplex(allocator, snapRoot(-qb / 2 + shift), snapRoot(-im))) catch return SimplifyError.OutOfMemory;
         }
     }
 

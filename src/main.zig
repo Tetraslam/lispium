@@ -57,7 +57,10 @@ fn mainImpl(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "repl")) {
             // Optional file argument preloads definitions into the session
             const preload = args_it.next();
-            try repl.runWithFile(allocator, io, preload);
+            const home = init.minimal.environ.getAlloc(allocator, "HOME") catch
+                init.minimal.environ.getAlloc(allocator, "USERPROFILE") catch null;
+            defer if (home) |h| allocator.free(h);
+            try repl.runWithFile(allocator, io, preload, home);
             return;
         } else if (std.mem.eql(u8, cmd, "eval")) {
             // Evaluate an expression: lispium eval "(+ 1 2)"  (or - for stdin)
@@ -81,14 +84,38 @@ fn mainImpl(init: std.process.Init) !void {
             return;
         } else if (std.mem.eql(u8, cmd, "run")) {
             // Run a file: lispium run file.lisp
-            const file_path = args_it.next() orelse {
-                try stderr.print("Usage: lispium run <file.lspm> [args...]\n", .{});
-                return;
-            };
+            var file_path: ?[]const u8 = null;
+            var watch = false;
+            var timed = false;
             var script_args: std.ArrayList([]const u8) = .empty;
             defer script_args.deinit(allocator);
-            while (args_it.next()) |a| try script_args.append(allocator, a);
-            const ok = try runFile(allocator, io, file_path, script_args.items, stdout, stderr);
+            while (args_it.next()) |a| {
+                if (file_path == null and std.mem.eql(u8, a, "--watch")) {
+                    watch = true;
+                } else if (file_path == null and std.mem.eql(u8, a, "--time")) {
+                    timed = true;
+                } else if (file_path == null) {
+                    file_path = a;
+                } else {
+                    try script_args.append(allocator, a);
+                }
+            }
+            const path = file_path orelse {
+                try stderr.print("Usage: lispium run [--watch] [--time] <file.lspm> [args...]\n", .{});
+                return;
+            };
+
+            if (watch) {
+                try watchFile(allocator, io, path, script_args.items, stdout, stderr);
+                return;
+            }
+
+            const start = if (timed) std.Io.Timestamp.now(io, .awake).nanoseconds else 0;
+            const ok = try runFile(allocator, io, path, script_args.items, stdout, stderr);
+            if (timed) {
+                const us: u64 = @intCast(@max(0, @divTrunc(std.Io.Timestamp.now(io, .awake).nanoseconds - start, 1000)));
+                try stderr.print("total: {d}.{d:0>3}ms\n", .{ us / 1000, us % 1000 });
+            }
             if (!ok) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
@@ -99,6 +126,14 @@ fn mainImpl(init: std.process.Init) !void {
             return;
         } else if (std.mem.eql(u8, cmd, "lsp")) {
             try lsp.run(allocator, io);
+            return;
+        } else if (std.mem.eql(u8, cmd, "completions")) {
+            // Shell completion scripts: lispium completions bash|zsh|fish
+            const shell = args_it.next() orelse {
+                try stderr.print("Usage: lispium completions bash|zsh|fish\n", .{});
+                std.process.exit(1);
+            };
+            try printCompletions(stdout, shell, stderr);
             return;
         } else if (std.mem.eql(u8, cmd, "docs")) {
             // lispium docs           -> list all documented names
@@ -193,6 +228,28 @@ fn mainImpl(init: std.process.Init) !void {
             if (files.items.len == 0) {
                 // Default: format the current directory
                 try files.append(allocator, ".");
+            }
+
+            // '-' formats stdin to stdout (editor integration)
+            if (files.items.len == 1 and std.mem.eql(u8, files.items[0], "-")) {
+                var rbuf: [64 * 1024]u8 = undefined;
+                var rdr: std.Io.File.Reader = .init(.stdin(), io, &rbuf);
+                var collected: std.Io.Writer.Allocating = .init(allocator);
+                defer collected.deinit();
+                _ = rdr.interface.streamRemaining(&collected.writer) catch {};
+                const source = try collected.toOwnedSlice();
+                defer allocator.free(source);
+                const formatted = formatter.format(allocator, source) catch |err| {
+                    const msg = switch (err) {
+                        error.UnbalancedParens => "unbalanced parentheses",
+                        error.OutOfMemory => "out of memory",
+                    };
+                    try stderr.print("format error: {s}\n", .{msg});
+                    std.process.exit(1);
+                };
+                defer allocator.free(formatted);
+                try stdout.print("{s}", .{formatted});
+                return;
             }
 
             // Expand directory arguments into their .lspm files (recursive)
@@ -388,10 +445,11 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  lispium repl [file.lspm]  Start interactive REPL (optionally preloading a file)
         \\  lispium eval "<expr>"     Evaluate a single expression
-        \\  lispium run <file.lspm>   Run a Lispium source file
+        \\  lispium run <file.lspm>   Run a file (--watch reruns on change, --time)
         \\  lispium fmt [paths...]    Format source in place (--check for CI, --stdout to print)
         \\  lispium test [dir|files]  Run *_test.lspm files (assert-based tests)
         \\  lispium docs [name|--html] Builtin reference (terminal or static site)
+        \\  lispium completions <sh>  Shell completions (bash, zsh, fish)
         \\  lispium bench [options]   Run benchmark suite
         \\  lispium lsp               Start language server (for editors)
         \\  lispium help              Show this help message
@@ -712,6 +770,68 @@ fn writeEscapedString(writer: anytype, s: []const u8) !void {
         }
     }
     try writer.print("\"", .{});
+}
+
+/// Reruns a file whenever its modification time changes (polling).
+fn watchFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    script_args: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !void {
+    var last_mtime: i128 = 0;
+    try stdout.print("watching {s} (Ctrl+C to stop)\n", .{path});
+    while (true) {
+        const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch {
+            std.Io.sleep(io, .fromNanoseconds(300 * std.time.ns_per_ms), .awake) catch return;
+            continue;
+        };
+        const mtime = stat.mtime.nanoseconds;
+        if (mtime != last_mtime) {
+            last_mtime = mtime;
+            try stdout.print("\x1b[2J\x1b[H", .{}); // clear screen
+            try stdout.print("=== {s}\n", .{path});
+            _ = runFile(allocator, io, path, script_args, stdout, stderr) catch {};
+            stdout.flush() catch {};
+        }
+        std.Io.sleep(io, .fromNanoseconds(300 * std.time.ns_per_ms), .awake) catch return;
+    }
+}
+
+/// Emits a shell completion script for the CLI.
+fn printCompletions(stdout: anytype, shell: []const u8, stderr: anytype) !void {
+    const subcommands = "repl eval run fmt test docs completions bench lsp help version";
+    if (std.mem.eql(u8, shell, "bash")) {
+        try stdout.print(
+            \\_lispium() {{
+            \\  local cur="${{COMP_WORDS[COMP_CWORD]}}"
+            \\  if [ "$COMP_CWORD" -eq 1 ]; then
+            \\    COMPREPLY=($(compgen -W "{s}" -- "$cur"))
+            \\  else
+            \\    COMPREPLY=($(compgen -f -X '!*.lspm' -- "$cur") $(compgen -d -- "$cur"))
+            \\  fi
+            \\}}
+            \\complete -F _lispium lispium
+            \\
+        , .{subcommands});
+    } else if (std.mem.eql(u8, shell, "zsh")) {
+        try stdout.print(
+            \\#compdef lispium
+            \\_arguments '1:command:({s})' '*:file:_files -g "*.lspm"'
+            \\
+        , .{subcommands});
+    } else if (std.mem.eql(u8, shell, "fish")) {
+        var it = std.mem.splitScalar(u8, subcommands, ' ');
+        while (it.next()) |sub| {
+            try stdout.print("complete -c lispium -n '__fish_use_subcommand' -a {s}\n", .{sub});
+        }
+        try stdout.print("complete -c lispium -a '(__fish_complete_suffix .lspm)'\n", .{});
+    } else {
+        try stderr.print("Unknown shell '{s}' (expected bash, zsh, or fish)\n", .{shell});
+        std.process.exit(1);
+    }
 }
 
 /// Prints the user-function call chain recorded for the last error.
