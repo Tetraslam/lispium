@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lispium Playground</title>
+<style>
+  :root { --bg: #16161d; --fg: #dcd7ba; --dim: #727169; --accent: #7e9cd8; --card: #1f1f28; --code: #2a2a37; --ok: #98bb6c; --err: #e82424; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.6 -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg);
+         display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 1rem 1.5rem .5rem; display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.3rem; } h1 a { color: var(--fg); text-decoration: none; }
+  .sub { color: var(--dim); font-size: .9rem; } .sub a { color: var(--accent); }
+  #repl { flex: 1; overflow-y: auto; padding: .5rem 1.5rem; font-family: ui-monospace, "JetBrains Mono", monospace; font-size: .95rem; }
+  .in { color: var(--accent); white-space: pre-wrap; }
+  .out { color: var(--ok); white-space: pre-wrap; margin-bottom: .4rem; }
+  .out.err { color: var(--err); }
+  #inputrow { display: flex; gap: .6rem; padding: .8rem 1.5rem 1.2rem; border-top: 1px solid var(--code); }
+  #input { flex: 1; font-family: ui-monospace, monospace; font-size: .95rem; padding: .55rem .8rem;
+           background: var(--card); color: var(--fg); border: 1px solid var(--code); border-radius: 8px; }
+  button { font-size: .9rem; padding: .55rem 1rem; background: var(--card); color: var(--fg);
+           border: 1px solid var(--code); border-radius: 8px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .hint { color: var(--dim); font-size: .85rem; padding: 0 1.5rem .3rem; }
+  .chips { padding: 0 1.5rem .5rem; display: flex; gap: .4rem; flex-wrap: wrap; }
+  .chip { font-family: ui-monospace, monospace; font-size: .8rem; padding: .25rem .6rem; background: var(--card);
+          border: 1px solid var(--code); border-radius: 999px; cursor: pointer; color: var(--dim); }
+  .chip:hover { color: var(--fg); border-color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="https://github.com/Tetraslam/lispium">Lispium</a> Playground</h1>
+  <span class="sub">a symbolic CAS in your browser (WebAssembly, no server) &middot; <a href="../">function reference</a></span>
+</header>
+<div class="chips" id="chips">
+  <span class="chip">(diff (^ x 3) x)</span>
+  <span class="chip">(+ 1/3 1/6)</span>
+  <span class="chip">(solve (+ (^ x 3) -8) x)</span>
+  <span class="chip">(sum i 1 n (^ i 2))</span>
+  <span class="chip">(integrate (* x (exp (^ x 2))) x)</span>
+  <span class="chip">(/ (* 100 (unit km)) (unit h))</span>
+  <span class="chip">(defmacro (unless c a b) `(if ,c ,b ,a))</span>
+  <span class="chip">(eigenvalues (matrix (2 1) (1 2)))</span>
+</div>
+<div id="repl"></div>
+<div class="hint">Enter evaluates &middot; definitions persist &middot; Up/Down for history</div>
+<div id="inputrow">
+  <input id="input" placeholder="(+ 1 2)" autofocus autocomplete="off" spellcheck="false">
+  <button id="run">Run</button>
+  <button id="reset">Reset</button>
+</div>
+<script>
+let wasm, memory;
+const repl = document.getElementById('repl');
+const input = document.getElementById('input');
+const history = [];
+let histIdx = -1;
+
+async function boot() {
+  const { instance } = await WebAssembly.instantiateStreaming(fetch('lispium.wasm'), {});
+  wasm = instance.exports;
+  memory = wasm.memory;
+  append('out', 'Lispium ready. Try the chips above or type an expression.');
+}
+
+function evalStr(src) {
+  const bytes = new TextEncoder().encode(src);
+  const ptr = wasm.lispium_alloc(bytes.length);
+  new Uint8Array(memory.buffer, ptr, bytes.length).set(bytes);
+  const out = wasm.lispium_eval(ptr, bytes.length);
+  const mem = new Uint8Array(memory.buffer);
+  let end = out;
+  while (mem[end] !== 0) end++;
+  return new TextDecoder().decode(mem.slice(out, end));
+}
+
+function append(cls, text) {
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = text;
+  repl.appendChild(div);
+  repl.scrollTop = repl.scrollHeight;
+}
+
+function run() {
+  const src = input.value.trim();
+  if (!src || !wasm) return;
+  history.push(src);
+  histIdx = history.length;
+  append('in', 'lispium> ' + src);
+  const result = evalStr(src).replace(/\n$/, '');
+  append(result.startsWith('error') || result.startsWith('parse error') ? 'out err' : 'out', result);
+  input.value = '';
+}
+
+document.getElementById('run').addEventListener('click', run);
+document.getElementById('reset').addEventListener('click', () => {
+  wasm.lispium_reset();
+  append('out', '(environment reset)');
+});
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') run();
+  if (e.key === 'ArrowUp') { if (histIdx > 0) { histIdx--; input.value = history[histIdx]; e.preventDefault(); } }
+  if (e.key === 'ArrowDown') {
+    if (histIdx < history.length - 1) { histIdx++; input.value = history[histIdx]; }
+    else { histIdx = history.length; input.value = ''; }
+    e.preventDefault();
+  }
+});
+document.getElementById('chips').addEventListener('click', (e) => {
+  if (e.target.classList.contains('chip')) { input.value = e.target.textContent; input.focus(); }
+});
+boot();
+</script>
+</body>
+</html>

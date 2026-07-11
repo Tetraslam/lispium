@@ -20,10 +20,18 @@ pub fn main(init: std.process.Init) !void {
     // overflow can occur.
     const thread = try std.Thread.spawn(
         .{ .stack_size = 256 * 1024 * 1024 },
-        mainImpl,
+        mainWrapper,
         .{init},
     );
     thread.join();
+}
+
+fn mainWrapper(init: std.process.Init) !void {
+    mainImpl(init) catch |err| switch (err) {
+        // A closed pipe (e.g. `lispium docs | head`) is not an error
+        error.WriteFailed => return,
+        else => return err,
+    };
 }
 
 fn mainImpl(init: std.process.Init) !void {
@@ -91,6 +99,29 @@ fn mainImpl(init: std.process.Init) !void {
             return;
         } else if (std.mem.eql(u8, cmd, "lsp")) {
             try lsp.run(allocator, io);
+            return;
+        } else if (std.mem.eql(u8, cmd, "docs")) {
+            // lispium docs           -> list all documented names
+            // lispium docs <name>    -> terminal docs for one function
+            // lispium docs --html    -> full static reference site to stdout
+            const docs_table = @import("docs.zig");
+            if (args_it.next()) |arg| {
+                if (std.mem.eql(u8, arg, "--html")) {
+                    try @import("docsite.zig").writeHtml(stdout);
+                    return;
+                }
+                if (docs_table.find(arg)) |doc| {
+                    try stdout.print("{s}\n  {s}.\n", .{ doc.signature, doc.summary });
+                    if (doc.example) |ex| try stdout.print("  Example: {s}\n", .{ex});
+                } else {
+                    try stderr.print("No documentation for '{s}'\n", .{arg});
+                    std.process.exit(1);
+                }
+                return;
+            }
+            for (docs_table.docs) |doc| {
+                try stdout.print("{s: <18} {s}\n", .{ doc.name, doc.signature });
+            }
             return;
         } else if (std.mem.eql(u8, cmd, "test")) {
             // Run *_test.lspm files: lispium test [dir|files...]
@@ -360,6 +391,7 @@ fn printUsage(writer: anytype) !void {
         \\  lispium run <file.lspm>   Run a Lispium source file
         \\  lispium fmt [paths...]    Format source in place (--check for CI, --stdout to print)
         \\  lispium test [dir|files]  Run *_test.lspm files (assert-based tests)
+        \\  lispium docs [name|--html] Builtin reference (terminal or static site)
         \\  lispium bench [options]   Run benchmark suite
         \\  lispium lsp               Start language server (for editors)
         \\  lispium help              Show this help message

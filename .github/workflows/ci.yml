@@ -49,6 +49,19 @@ jobs:
         if: runner.os != 'Windows'
         run: ./zig-out/bin/lispium fmt --check .
 
+      - name: Check doc site freshness
+        if: runner.os == 'Linux'
+        run: |
+          ./zig-out/bin/lispium docs --html > /tmp/docs.html
+          diff /tmp/docs.html docs/index.html || {
+            echo "docs/index.html is stale; run: lispium docs --html > docs/index.html"
+            exit 1
+          }
+
+      - name: Build WebAssembly playground
+        if: runner.os == 'Linux'
+        run: zig build wasm
+
       - name: Run cookbook examples
         if: runner.os != 'Windows'
         run: |

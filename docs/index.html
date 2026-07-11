@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lispium 0.7.0 - Function Reference</title>
+<style>
+  :root { --bg: #16161d; --fg: #dcd7ba; --dim: #727169; --accent: #7e9cd8; --card: #1f1f28; --code: #2a2a37; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.6 -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+  header { padding: 2.5rem 1.5rem 1rem; max-width: 60rem; margin: 0 auto; }
+  h1 { margin: 0 0 .25rem; font-size: 1.8rem; } h1 a { color: var(--fg); text-decoration: none; }
+  .sub { color: var(--dim); margin-bottom: 1rem; }
+  .sub a { color: var(--accent); }
+  main { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem 4rem; }
+  #search { width: 100%; padding: .6rem .9rem; font-size: 1rem; border-radius: 8px; border: 1px solid var(--code);
+             background: var(--card); color: var(--fg); margin-bottom: 1.5rem; }
+  .entry { background: var(--card); border-radius: 10px; padding: .9rem 1.1rem; margin-bottom: .75rem; }
+  .sig { font-family: ui-monospace, "JetBrains Mono", monospace; color: var(--accent); font-weight: 600; }
+  .summary { margin: .3rem 0 0; }
+  .example { margin: .5rem 0 0; font-family: ui-monospace, monospace; font-size: .9rem;
+              background: var(--code); border-radius: 6px; padding: .45rem .7rem; color: #98bb6c; overflow-x: auto; white-space: pre; }
+  .count { color: var(--dim); font-size: .9rem; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<header>
+<h1><a href="https://github.com/Tetraslam/lispium">Lispium</a> Function Reference</h1>
+<div class="sub">v0.7.0 &middot; every builtin and special form &middot;
+<a href="playground/">try it in the playground</a> &middot;
+<a href="https://github.com/Tetraslam/lispium">GitHub</a></div>
+</header>
+<main>
+<input id="search" type="search" placeholder="Filter: diff, matrix, rational, macro..." autofocus>
+<div class="count"><span id="shown">0</span> entries</div>
+<div id="entries">
+<div class="entry" data-name="begin"><div class="sig">(begin e1 e2 ...)</div><div class="summary">Evaluates expressions in order, returning the last.</div><div class="example">(begin (print 1) (+ 2 3)) =&gt; 5</div></div>
+<div class="entry" data-name="cond"><div class="sig">(cond (test result...) ... (else result...))</div><div class="summary">Multi-branch conditional; else always matches.</div><div class="example">(cond ((&lt; x 0) &quot;neg&quot;) (else &quot;non-neg&quot;))</div></div>
+<div class="entry" data-name="quote"><div class="sig">(quote expr) or 'expr</div><div class="summary">Returns expr unevaluated (data, not code).</div><div class="example">'(+ 1 2) =&gt; (+ 1 2)</div></div>
+<div class="entry" data-name="quasiquote"><div class="sig">(quasiquote expr) or `expr</div><div class="summary">Like quote, but (unquote x) / ,x evaluates.</div><div class="example">`(+ 1 ,(* 2 3)) =&gt; (+ 1 6)</div></div>
+<div class="entry" data-name="unquote"><div class="sig">(unquote expr) or ,expr</div><div class="summary">Evaluates expr inside a quasiquote template.</div></div>
+<div class="entry" data-name="defmacro"><div class="sig">(defmacro (name params...) template)</div><div class="summary">Defines a macro: params bind to unevaluated arguments, the template builds code.</div><div class="example">(defmacro (unless c a b) `(if ,c ,b ,a))</div></div>
+<div class="entry" data-name="try"><div class="sig">(try expr fallback)</div><div class="summary">Evaluates expr; on error evaluates fallback instead.</div><div class="example">(try (/ 1 0) &quot;fallback&quot;) =&gt; &quot;fallback&quot;</div></div>
+<div class="entry" data-name="time"><div class="sig">(time expr)</div><div class="summary">Evaluates expr and prints the wall-clock time taken.</div></div>
+<div class="entry" data-name="trace"><div class="sig">(trace fn-name)</div><div class="summary">Toggles call/return tracing for a user-defined function.</div></div>
+<div class="entry" data-name="print"><div class="sig">(print a b ...)</div><div class="summary">Writes arguments separated by spaces, then a newline; strings print raw.</div><div class="example">(print &quot;x =&quot; 42)</div></div>
+<div class="entry" data-name="read"><div class="sig">(read)</div><div class="summary">Reads one line from input and parses it as an expression; eof at end of input.</div><div class="example">(define x (read))</div></div>
+<div class="entry" data-name="load"><div class="sig">(load &quot;file.lspm&quot;)</div><div class="summary">Evaluates a file in the current environment; returns the statement count.</div></div>
+<div class="entry" data-name="args"><div class="sig">(args)</div><div class="summary">Command-line arguments after the script path, as a list of strings.</div></div>
+<div class="entry" data-name="exit"><div class="sig">(exit) or (exit code)</div><div class="summary">Terminates the process with an optional status code.</div></div>
+<div class="entry" data-name="random"><div class="sig">(random) or (random n)</div><div class="summary">Uniform random float in [0,1), or integer in [0,n).</div><div class="example">(random 6) =&gt; 0..5</div></div>
+<div class="entry" data-name="random-seed"><div class="sig">(random-seed n)</div><div class="summary">Seeds the PRNG for reproducible sequences.</div></div>
+<div class="entry" data-name="sort"><div class="sig">(sort lst)</div><div class="summary">Ascending sort of numbers, rationals, and strings.</div><div class="example">(sort (list 3 1 2)) =&gt; (list 1 2 3)</div></div>
+<div class="entry" data-name="assoc"><div class="sig">(assoc key alist)</div><div class="summary">First (key value) pair matching key in a list of pairs, else 0.</div><div class="example">(assoc 2 (list (list 1 &quot;a&quot;) (list 2 &quot;b&quot;))) =&gt; (list 2 &quot;b&quot;)</div></div>
+<div class="entry" data-name="unit"><div class="sig">(unit name)</div><div class="summary">One SI or derived unit as a dimension-carrying quantity (m kg s A K mol cd, km cm mm g min h Hz N Pa J W C V).</div><div class="example">(/ (* 100 (unit km)) (unit h)) =&gt; 27.78 m/s</div></div>
+<div class="entry" data-name="concat"><div class="sig">(concat s1 s2 ...)</div><div class="summary">Concatenates strings; non-string arguments are rendered.</div><div class="example">(concat &quot;x = &quot; (+ 1 2)) =&gt; &quot;x = 3&quot;</div></div>
+<div class="entry" data-name="substring"><div class="sig">(substring s start end)</div><div class="summary">Characters [start, end) of a string.</div><div class="example">(substring &quot;hello world&quot; 0 5) =&gt; &quot;hello&quot;</div></div>
+<div class="entry" data-name="string-&gt;number"><div class="sig">(string-&gt;number s)</div><div class="summary">Parses a number (or p/q rational) from a string.</div><div class="example">(string-&gt;number &quot;22/7&quot;) =&gt; 22/7</div></div>
+<div class="entry" data-name="number-&gt;string"><div class="sig">(number-&gt;string x)</div><div class="summary">Renders any expression to its printed form as a string.</div><div class="example">(number-&gt;string 1/3) =&gt; &quot;1/3&quot;</div></div>
+<div class="entry" data-name="split"><div class="sig">(split s sep)</div><div class="summary">Splits a string on a separator, returning a list of strings.</div><div class="example">(split &quot;a,b&quot; &quot;,&quot;) =&gt; (list &quot;a&quot; &quot;b&quot;)</div></div>
+<div class="entry" data-name="numer"><div class="sig">(numer x)</div><div class="summary">Numerator of an exact rational (integers are n/1).</div><div class="example">(numer 22/7) =&gt; 22</div></div>
+<div class="entry" data-name="denom"><div class="sig">(denom x)</div><div class="summary">Denominator of an exact rational (integers are n/1).</div><div class="example">(denom 22/7) =&gt; 7</div></div>
+<div class="entry" data-name="number?"><div class="sig">(number? x)</div><div class="summary">True for numbers and exact rationals.</div></div>
+<div class="entry" data-name="integer?"><div class="sig">(integer? x)</div><div class="summary">True for integer-valued numbers.</div></div>
+<div class="entry" data-name="rational?"><div class="sig">(rational? x)</div><div class="summary">True for exact rationals and integers.</div></div>
+<div class="entry" data-name="symbol?"><div class="sig">(symbol? x)</div><div class="summary">True for symbols.</div></div>
+<div class="entry" data-name="string?"><div class="sig">(string? x)</div><div class="summary">True for strings.</div></div>
+<div class="entry" data-name="list?"><div class="sig">(list? x)</div><div class="summary">True for lists.</div></div>
+<div class="entry" data-name="lambda?"><div class="sig">(lambda? x)</div><div class="summary">True for functions.</div></div>
+<div class="entry" data-name="null?"><div class="sig">(null? x)</div><div class="summary">True for the empty list.</div></div>
+<div class="entry" data-name="complex?"><div class="sig">(complex? x)</div><div class="summary">True for complex numbers.</div></div>
+<div class="entry" data-name="apply"><div class="sig">(apply f arg-list)</div><div class="summary">Calls f with the elements of arg-list as arguments.</div><div class="example">(apply + '(1 2 3)) =&gt; 6</div></div>
+<div class="entry" data-name="error"><div class="sig">(error &quot;message&quot; ...)</div><div class="summary">Raises a user error, printing the message.</div></div>
+<div class="entry" data-name="assert"><div class="sig">(assert cond [&quot;message&quot;])</div><div class="summary">Errors when cond is false; the test runner counts failures.</div><div class="example">(assert (= (+ 1 1) 2) &quot;arithmetic works&quot;)</div></div>
+<div class="entry" data-name="define"><div class="sig">(define name value) or (define (name params...) body)</div><div class="summary">Binds a value, or defines a function (captures free variables by value).</div><div class="example">(define (square x) (* x x))</div></div>
+<div class="entry" data-name="lambda"><div class="sig">(lambda (params...) body)</div><div class="summary">Creates an anonymous function (closure).</div><div class="example">((lambda (x) (* x x)) 5) =&gt; 25</div></div>
+<div class="entry" data-name="let"><div class="sig">(let ((var val) ...) body)</div><div class="summary">Local bindings with lexical scope.</div><div class="example">(let ((a 3) (b 4)) (+ a b)) =&gt; 7</div></div>
+<div class="entry" data-name="letrec"><div class="sig">(letrec ((var val) ...) body)</div><div class="summary">Recursive local bindings (functions can call themselves).</div><div class="example">(letrec ((f (lambda (n) (if (= n 0) 1 (* n (f (- n 1))))))) (f 5)) =&gt; 120</div></div>
+<div class="entry" data-name="if"><div class="sig">(if condition then-expr [else-expr])</div><div class="summary">Conditional; stays symbolic when the condition is undecidable.</div><div class="example">(if (&gt; 2 1) &quot;yes&quot; &quot;no&quot;)</div></div>
+<div class="entry" data-name="sum"><div class="sig">(sum var start end body)</div><div class="summary">Summation of body for var from start to end.</div><div class="example">(sum i 1 5 (* i i)) =&gt; 55</div></div>
+<div class="entry" data-name="product"><div class="sig">(product var start end body)</div><div class="summary">Product of body for var from start to end.</div><div class="example">(product i 1 5 i) =&gt; 120</div></div>
+<div class="entry" data-name="+"><div class="sig">(+ a b c ...)</div><div class="summary">Addition (variadic; complex, vectors, matrices).</div></div>
+<div class="entry" data-name="-"><div class="sig">(- a b ...) or (- a)</div><div class="summary">Subtraction; unary form negates.</div></div>
+<div class="entry" data-name="*"><div class="sig">(* a b c ...)</div><div class="summary">Multiplication (variadic; complex, scalar·vector/matrix).</div></div>
+<div class="entry" data-name="/"><div class="sig">(/ a b) or (/ a)</div><div class="summary">Division; unary form is the reciprocal.</div></div>
+<div class="entry" data-name="^"><div class="sig">(^ base exp)</div><div class="summary">Exponentiation (complex base; negative base with fractional exponent gives the principal complex value).</div></div>
+<div class="entry" data-name="pow"><div class="sig">(^ base exp)</div><div class="summary">Exponentiation (complex base; negative base with fractional exponent gives the principal complex value).</div></div>
+<div class="entry" data-name="abs"><div class="sig">(abs x)</div><div class="summary">Absolute value (magnitude for complex).</div></div>
+<div class="entry" data-name="floor"><div class="sig">(floor x)</div><div class="summary">Round down.</div></div>
+<div class="entry" data-name="ceil"><div class="sig">(ceil x)</div><div class="summary">Round up.</div></div>
+<div class="entry" data-name="round"><div class="sig">(round x)</div><div class="summary">Round to nearest.</div></div>
+<div class="entry" data-name="sign"><div class="sig">(sign x)</div><div class="summary">-1, 0, or 1.</div></div>
+<div class="entry" data-name="simplify"><div class="sig">(simplify expr)</div><div class="summary">Algebraic simplification.</div><div class="example">(simplify (+ x x)) =&gt; (* 2 x)</div></div>
+<div class="entry" data-name="evalf"><div class="sig">(evalf expr) or (N expr)</div><div class="summary">Numeric evaluation of constants (pi, e).</div></div>
+<div class="entry" data-name="N"><div class="sig">(evalf expr) or (N expr)</div><div class="summary">Numeric evaluation of constants (pi, e).</div></div>
+<div class="entry" data-name="diff"><div class="sig">(diff expr var) or (diff expr var n)</div><div class="summary">Differentiation (nth derivative).</div><div class="example">(diff (^ x 3) x) =&gt; (* 3 (^ x 2))</div></div>
+<div class="entry" data-name="integrate"><div class="sig">(integrate expr var) or (integrate expr var a b)</div><div class="summary">Integration (indefinite or definite).</div></div>
+<div class="entry" data-name="expand"><div class="sig">(expand expr)</div><div class="summary">Expand products.</div><div class="example">(expand (^ (+ x 1) 2)) =&gt; (+ (^ x 2) (* 2 x) 1)</div></div>
+<div class="entry" data-name="substitute"><div class="sig">(substitute expr var value)</div><div class="summary">Variable substitution.</div><div class="example">(substitute (+ x y) x 3) =&gt; (+ 3 y)</div></div>
+<div class="entry" data-name="taylor"><div class="sig">(taylor expr var point order)</div><div class="summary">Taylor series expansion.</div><div class="example">(taylor (exp x) x 0 4) =&gt; (+ 1 x (/ (^ x 2) 2) ...)</div></div>
+<div class="entry" data-name="solve"><div class="sig">(solve expr var) or (solve (= left right) var)</div><div class="summary">Solve equation (linear/quadratic).</div><div class="example">(solve (+ (^ x 2) (* -4 1)) x) =&gt; (solutions 2 -2)</div></div>
+<div class="entry" data-name="factor"><div class="sig">(factor expr var)</div><div class="summary">Factor polynomial.</div><div class="example">(factor (+ (^ x 2) (* -1 1)) x) =&gt; (* (- x 1) (+ x 1))</div></div>
+<div class="entry" data-name="partial-fractions"><div class="sig">(partial-fractions expr var)</div><div class="summary">Partial fraction decomposition.</div></div>
+<div class="entry" data-name="collect"><div class="sig">(collect expr var)</div><div class="summary">Collect like terms.</div><div class="example">(collect (+ (* 2 x) (* 3 x) 5) x) =&gt; (+ (* 5 x) 5)</div></div>
+<div class="entry" data-name="limit"><div class="sig">(limit expr var point)</div><div class="summary">Limit with L'Hôpital's rule.</div><div class="example">(limit (/ (sin x) x) x 0) =&gt; 1</div></div>
+<div class="entry" data-name="sin"><div class="sig">(sin x)</div><div class="summary">Sine.</div></div>
+<div class="entry" data-name="cos"><div class="sig">(cos x)</div><div class="summary">Cosine.</div></div>
+<div class="entry" data-name="tan"><div class="sig">(tan x)</div><div class="summary">Tangent.</div></div>
+<div class="entry" data-name="asin"><div class="sig">(asin x)</div><div class="summary">Arc sine.</div></div>
+<div class="entry" data-name="acos"><div class="sig">(acos x)</div><div class="summary">Arc cosine.</div></div>
+<div class="entry" data-name="atan"><div class="sig">(atan x)</div><div class="summary">Arc tangent.</div></div>
+<div class="entry" data-name="atan2"><div class="sig">(atan2 y x)</div><div class="summary">Two-argument arc tangent.</div></div>
+<div class="entry" data-name="sinh"><div class="sig">(sinh x)</div><div class="summary">Hyperbolic sine.</div></div>
+<div class="entry" data-name="cosh"><div class="sig">(cosh x)</div><div class="summary">Hyperbolic cosine.</div></div>
+<div class="entry" data-name="tanh"><div class="sig">(tanh x)</div><div class="summary">Hyperbolic tangent.</div></div>
+<div class="entry" data-name="asinh"><div class="sig">(asinh x)</div><div class="summary">Inverse hyperbolic sine.</div></div>
+<div class="entry" data-name="acosh"><div class="sig">(acosh x)</div><div class="summary">Inverse hyperbolic cosine.</div></div>
+<div class="entry" data-name="atanh"><div class="sig">(atanh x)</div><div class="summary">Inverse hyperbolic tangent.</div></div>
+<div class="entry" data-name="exp"><div class="sig">(exp x)</div><div class="summary">Exponential (e^x).</div></div>
+<div class="entry" data-name="ln"><div class="sig">(ln x)</div><div class="summary">Natural logarithm.</div></div>
+<div class="entry" data-name="log"><div class="sig">(log x) or (log x base)</div><div class="summary">Logarithm of x (default base 10).</div><div class="example">(log 100 10) =&gt; 2</div></div>
+<div class="entry" data-name="sqrt"><div class="sig">(sqrt x)</div><div class="summary">Square root; (sqrt -4) =&gt; (complex 0 2).</div></div>
+<div class="entry" data-name="complex"><div class="sig">(complex re im)</div><div class="summary">Create complex number.</div><div class="example">(complex 3 4) =&gt; 3 + 4i</div></div>
+<div class="entry" data-name="real"><div class="sig">(real z)</div><div class="summary">Real part.</div></div>
+<div class="entry" data-name="imag"><div class="sig">(imag z)</div><div class="summary">Imaginary part.</div></div>
+<div class="entry" data-name="conj"><div class="sig">(conj z)</div><div class="summary">Complex conjugate.</div></div>
+<div class="entry" data-name="magnitude"><div class="sig">(magnitude z)</div><div class="summary">Absolute value.</div></div>
+<div class="entry" data-name="arg"><div class="sig">(arg z)</div><div class="summary">Argument (angle).</div></div>
+<div class="entry" data-name="rule"><div class="sig">(rule pattern replacement)</div><div class="summary">Define rewrite rule.</div><div class="example">(rule (double ?x) (* 2 ?x))</div></div>
+<div class="entry" data-name="rewrite"><div class="sig">(rewrite expr)</div><div class="summary">Apply all defined rules.</div></div>
+<div class="entry" data-name="matrix"><div class="sig">(matrix (r1) (r2) ...)</div><div class="summary">Create matrix.</div><div class="example">(matrix (1 2) (3 4)) =&gt; 2x2 matrix</div></div>
+<div class="entry" data-name="det"><div class="sig">(det M)</div><div class="summary">Determinant.</div></div>
+<div class="entry" data-name="transpose"><div class="sig">(transpose M)</div><div class="summary">Transpose.</div></div>
+<div class="entry" data-name="trace"><div class="sig">(trace M)</div><div class="summary">Trace (sum of diagonal).</div></div>
+<div class="entry" data-name="matmul"><div class="sig">(matmul A B)</div><div class="summary">Matrix multiplication.</div></div>
+<div class="entry" data-name="inv"><div class="sig">(inv M)</div><div class="summary">Matrix inverse.</div></div>
+<div class="entry" data-name="eigenvalues"><div class="sig">(eigenvalues M)</div><div class="summary">Eigenvalues (2x2 only).</div></div>
+<div class="entry" data-name="eigenvectors"><div class="sig">(eigenvectors M)</div><div class="summary">Eigenvectors (2x2 only).</div></div>
+<div class="entry" data-name="linsolve"><div class="sig">(linsolve A b)</div><div class="summary">Solve linear system Ax=b.</div></div>
+<div class="entry" data-name="lu"><div class="sig">(lu M)</div><div class="summary">LU decomposition.</div></div>
+<div class="entry" data-name="charpoly"><div class="sig">(charpoly M var)</div><div class="summary">Characteristic polynomial.</div></div>
+<div class="entry" data-name="vector"><div class="sig">(vector x y z ...)</div><div class="summary">Create vector.</div><div class="example">(vector 1 2 3) =&gt; ⟨1, 2, 3⟩</div></div>
+<div class="entry" data-name="dot"><div class="sig">(dot v1 v2)</div><div class="summary">Dot product.</div></div>
+<div class="entry" data-name="cross"><div class="sig">(cross v1 v2)</div><div class="summary">Cross product (3D only).</div></div>
+<div class="entry" data-name="norm"><div class="sig">(norm v)</div><div class="summary">Euclidean norm.</div></div>
+<div class="entry" data-name="gradient"><div class="sig">(gradient f vars)</div><div class="summary">Gradient of scalar field.</div></div>
+<div class="entry" data-name="grad"><div class="sig">(gradient f vars)</div><div class="summary">Gradient of scalar field.</div><div class="example">(gradient (+ (^ x 2) (^ y 2)) (vector x y))</div></div>
+<div class="entry" data-name="divergence"><div class="sig">(divergence F vars)</div><div class="summary">Divergence of vector field.</div></div>
+<div class="entry" data-name="curl"><div class="sig">(curl F vars)</div><div class="summary">Curl of vector field (3D).</div></div>
+<div class="entry" data-name="laplacian"><div class="sig">(laplacian f vars)</div><div class="summary">Laplacian of scalar field.</div></div>
+<div class="entry" data-name="and"><div class="sig">(and a b ...)</div><div class="summary">Logical AND (variadic).</div></div>
+<div class="entry" data-name="or"><div class="sig">(or a b ...)</div><div class="summary">Logical OR (variadic).</div></div>
+<div class="entry" data-name="not"><div class="sig">(not a)</div><div class="summary">Logical NOT.</div></div>
+<div class="entry" data-name="xor"><div class="sig">(xor a b)</div><div class="summary">Exclusive OR.</div></div>
+<div class="entry" data-name="implies"><div class="sig">(implies a b)</div><div class="summary">Logical implication.</div></div>
+<div class="entry" data-name="mod"><div class="sig">(mod a b)</div><div class="summary">Modulo.</div></div>
+<div class="entry" data-name="gcd"><div class="sig">(gcd a b)</div><div class="summary">Greatest common divisor.</div></div>
+<div class="entry" data-name="lcm"><div class="sig">(lcm a b)</div><div class="summary">Least common multiple.</div></div>
+<div class="entry" data-name="modpow"><div class="sig">(modpow base exp mod)</div><div class="summary">Modular exponentiation.</div></div>
+<div class="entry" data-name="prime?"><div class="sig">(prime? n)</div><div class="summary">Primality test.</div></div>
+<div class="entry" data-name="factorize"><div class="sig">(factorize n)</div><div class="summary">Prime factorization.</div></div>
+<div class="entry" data-name="totient"><div class="sig">(totient n)</div><div class="summary">Euler's totient function.</div></div>
+<div class="entry" data-name="extgcd"><div class="sig">(extgcd a b)</div><div class="summary">Extended GCD (Bezout coefficients).</div></div>
+<div class="entry" data-name="crt"><div class="sig">(crt (vector r1 r2 ...) (vector m1 m2 ...))</div><div class="summary">Chinese Remainder Theorem.</div></div>
+<div class="entry" data-name="factorial"><div class="sig">(factorial n) or (! n)</div><div class="summary">Factorial.</div></div>
+<div class="entry" data-name="!"><div class="sig">(factorial n) or (! n)</div><div class="summary">Factorial.</div></div>
+<div class="entry" data-name="binomial"><div class="sig">(binomial n k)</div><div class="summary">Binomial coefficient.</div></div>
+<div class="entry" data-name="choose"><div class="sig">(binomial n k)</div><div class="summary">Binomial coefficient.</div></div>
+<div class="entry" data-name="permutations"><div class="sig">(permutations n r)</div><div class="summary">P(n,r); errors when r &gt; n.</div></div>
+<div class="entry" data-name="combinations"><div class="sig">(combinations n r)</div><div class="summary">C(n,r).</div></div>
+<div class="entry" data-name="mean"><div class="sig">(mean x1 x2 ...)</div><div class="summary">Arithmetic mean.</div></div>
+<div class="entry" data-name="variance"><div class="sig">(variance x1 x2 ...)</div><div class="summary">Population variance.</div></div>
+<div class="entry" data-name="stddev"><div class="sig">(stddev x1 x2 ...)</div><div class="summary">Standard deviation.</div></div>
+<div class="entry" data-name="median"><div class="sig">(median x1 x2 ...)</div><div class="summary">Median.</div></div>
+<div class="entry" data-name="min"><div class="sig">(min x1 x2 ...)</div><div class="summary">Minimum.</div></div>
+<div class="entry" data-name="max"><div class="sig">(max x1 x2 ...)</div><div class="summary">Maximum.</div></div>
+<div class="entry" data-name="coeffs"><div class="sig">(coeffs a b c ...)</div><div class="summary">Create coefficient list.</div></div>
+<div class="entry" data-name="polydiv"><div class="sig">(polydiv (coeffs ...) (coeffs ...) var)</div><div class="summary">Polynomial division (coefficient lists).</div></div>
+<div class="entry" data-name="polygcd"><div class="sig">(polygcd p1 p2)</div><div class="summary">Polynomial GCD.</div></div>
+<div class="entry" data-name="polylcm"><div class="sig">(polylcm p1 p2)</div><div class="summary">Polynomial LCM.</div></div>
+<div class="entry" data-name="roots"><div class="sig">(roots expr var)</div><div class="summary">Find polynomial roots.</div></div>
+<div class="entry" data-name="discriminant"><div class="sig">(discriminant expr var)</div><div class="summary">Discriminant.</div></div>
+<div class="entry" data-name="assume"><div class="sig">(assume var property)</div><div class="summary">Set assumption.</div></div>
+<div class="entry" data-name="is?"><div class="sig">(is? var property)</div><div class="summary">Check assumption.</div></div>
+<div class="entry" data-name="="><div class="sig">(= a b ...)</div><div class="summary">Equality (variadic; returns 1 or 0).</div></div>
+<div class="entry" data-name="&lt;"><div class="sig">(&lt; a b ...)</div><div class="summary">Chained less-than; symbolic args stay inert.</div></div>
+<div class="entry" data-name="&gt;"><div class="sig">(&gt; a b ...)</div><div class="summary">Chained greater-than; symbolic args stay inert.</div></div>
+<div class="entry" data-name="gamma"><div class="sig">(gamma x)</div><div class="summary">Gamma function Γ(x).</div></div>
+<div class="entry" data-name="beta"><div class="sig">(beta a b)</div><div class="summary">Beta function B(a,b).</div></div>
+<div class="entry" data-name="erf"><div class="sig">(erf x)</div><div class="summary">Error function.</div></div>
+<div class="entry" data-name="erfc"><div class="sig">(erfc x)</div><div class="summary">Complementary error function.</div></div>
+<div class="entry" data-name="besselj"><div class="sig">(besselj n x)</div><div class="summary">Bessel function of first kind J_n(x).</div></div>
+<div class="entry" data-name="bessely"><div class="sig">(bessely n x)</div><div class="summary">Bessel function of second kind Y_n(x).</div></div>
+<div class="entry" data-name="digamma"><div class="sig">(digamma x)</div><div class="summary">Digamma function ψ(x).</div></div>
+<div class="entry" data-name="dsolve"><div class="sig">(dsolve (= (diff y x) rhs) y x)</div><div class="summary">Solve first-order ODE (special form: the equation is not pre-evaluated).</div></div>
+<div class="entry" data-name="fourier"><div class="sig">(fourier expr x n)</div><div class="summary">Fourier series: returns (fourier-series a0 ((a1 b1) ... (an bn))) with numerically computed (noise-snapped) coefficients.</div></div>
+<div class="entry" data-name="laplace"><div class="sig">(laplace expr t s)</div><div class="summary">Laplace transform.</div></div>
+<div class="entry" data-name="inv-laplace"><div class="sig">(inv-laplace expr s t)</div><div class="summary">Inverse Laplace transform.</div></div>
+<div class="entry" data-name="tensor"><div class="sig">(tensor data)</div><div class="summary">Create tensor.</div></div>
+<div class="entry" data-name="tensor-rank"><div class="sig">(tensor-rank T)</div><div class="summary">Get tensor rank.</div></div>
+<div class="entry" data-name="tensor-contract"><div class="sig">(tensor-contract T i j)</div><div class="summary">Contract indices.</div></div>
+<div class="entry" data-name="tensor-product"><div class="sig">(tensor-product T1 T2)</div><div class="summary">Outer product.</div></div>
+<div class="entry" data-name="lagrange"><div class="sig">(lagrange (list (vector x y) ...) var)</div><div class="summary">Lagrange interpolation.</div></div>
+<div class="entry" data-name="newton-interp"><div class="sig">(newton-interp (list (vector x y) ...) var)</div><div class="summary">Newton interpolation.</div></div>
+<div class="entry" data-name="newton-raphson"><div class="sig">(newton-raphson expr var x0 tol)</div><div class="summary">Newton-Raphson method.</div></div>
+<div class="entry" data-name="bisection"><div class="sig">(bisection expr var a b tol)</div><div class="summary">Bisection method.</div></div>
+<div class="entry" data-name="to-cf"><div class="sig">(to-cf x)</div><div class="summary">Convert to continued fraction.</div></div>
+<div class="entry" data-name="from-cf"><div class="sig">(from-cf cf)</div><div class="summary">Convert from continued fraction.</div></div>
+<div class="entry" data-name="cf-convergent"><div class="sig">(cf-convergent cf n)</div><div class="summary">Get nth convergent.</div></div>
+<div class="entry" data-name="cf-rational"><div class="sig">(cf-rational p q)</div><div class="summary">CF from rational p/q.</div></div>
+<div class="entry" data-name="car"><div class="sig">(car lst)</div><div class="summary">First element.</div></div>
+<div class="entry" data-name="cdr"><div class="sig">(cdr lst)</div><div class="summary">Rest of list.</div></div>
+<div class="entry" data-name="cons"><div class="sig">(cons x lst)</div><div class="summary">Prepend element.</div></div>
+<div class="entry" data-name="list"><div class="sig">(list a b c ...)</div><div class="summary">Create list.</div></div>
+<div class="entry" data-name="length"><div class="sig">(length lst)</div><div class="summary">List length.</div></div>
+<div class="entry" data-name="nth"><div class="sig">(nth lst n)</div><div class="summary">Get nth element.</div></div>
+<div class="entry" data-name="map"><div class="sig">(map fn lst)</div><div class="summary">Map function over list.</div><div class="example">(map (lambda (x) (* x 2)) (list 1 2 3))</div></div>
+<div class="entry" data-name="filter"><div class="sig">(filter fn lst)</div><div class="summary">Filter list by predicate.</div></div>
+<div class="entry" data-name="reduce"><div class="sig">(reduce fn init lst)</div><div class="summary">Reduce list.</div></div>
+<div class="entry" data-name="append"><div class="sig">(append lst1 lst2)</div><div class="summary">Concatenate lists.</div></div>
+<div class="entry" data-name="reverse"><div class="sig">(reverse lst)</div><div class="summary">Reverse list.</div></div>
+<div class="entry" data-name="range"><div class="sig">(range n) or (range start end) or (range start end step)</div><div class="summary">Generate range.</div></div>
+<div class="entry" data-name="memoize"><div class="sig">(memoize expr)</div><div class="summary">Cache expression result.</div></div>
+<div class="entry" data-name="memo-clear"><div class="sig">(memo-clear)</div><div class="summary">Clear memoization cache.</div></div>
+<div class="entry" data-name="memo-stats"><div class="sig">(memo-stats)</div><div class="summary">Get cache size.</div></div>
+<div class="entry" data-name="plot-ascii"><div class="sig">(plot-ascii expr xmin xmax) or (plot-ascii expr xmin xmax height width)</div><div class="summary">ASCII plot.</div></div>
+<div class="entry" data-name="plot-svg"><div class="sig">(plot-svg expr xmin xmax) or (plot-svg expr xmin xmax height width)</div><div class="summary">SVG plot.</div></div>
+<div class="entry" data-name="plot-points"><div class="sig">(plot-points points)</div><div class="summary">Plot discrete points.</div></div>
+<div class="entry" data-name="diff-steps"><div class="sig">(diff-steps expr var)</div><div class="summary">Differentiation with steps.</div></div>
+<div class="entry" data-name="integrate-steps"><div class="sig">(integrate-steps expr var)</div><div class="summary">Integration with steps.</div></div>
+<div class="entry" data-name="simplify-steps"><div class="sig">(simplify-steps expr)</div><div class="summary">Simplification with steps.</div></div>
+<div class="entry" data-name="solve-steps"><div class="sig">(solve-steps expr var)</div><div class="summary">Equation solving with steps.</div></div>
+<div class="entry" data-name="quat"><div class="sig">(quat w x y z)</div><div class="summary">Create quaternion w + xi + yj + zk.</div></div>
+<div class="entry" data-name="quat+"><div class="sig">(quat+ q1 q2)</div><div class="summary">Quaternion addition.</div></div>
+<div class="entry" data-name="quat*"><div class="sig">(quat* q1 q2)</div><div class="summary">Hamilton product.</div></div>
+<div class="entry" data-name="quat-conj"><div class="sig">(quat-conj q)</div><div class="summary">Conjugate.</div></div>
+<div class="entry" data-name="quat-norm"><div class="sig">(quat-norm q)</div><div class="summary">Norm (magnitude).</div></div>
+<div class="entry" data-name="quat-inv"><div class="sig">(quat-inv q)</div><div class="summary">Multiplicative inverse.</div></div>
+<div class="entry" data-name="quat-scalar"><div class="sig">(quat-scalar q)</div><div class="summary">Scalar part (w).</div></div>
+<div class="entry" data-name="quat-vector"><div class="sig">(quat-vector q)</div><div class="summary">Vector part (x, y, z).</div></div>
+<div class="entry" data-name="gf"><div class="sig">(gf value prime)</div><div class="summary">Create element in GF(p); p must be prime.</div></div>
+<div class="entry" data-name="gf+"><div class="sig">(gf+ a b)</div><div class="summary">Addition in GF(p).</div></div>
+<div class="entry" data-name="gf-"><div class="sig">(gf- a b)</div><div class="summary">Subtraction in GF(p).</div></div>
+<div class="entry" data-name="gf*"><div class="sig">(gf* a b)</div><div class="summary">Multiplication in GF(p).</div></div>
+<div class="entry" data-name="gf/"><div class="sig">(gf/ a b)</div><div class="summary">Division in GF(p).</div></div>
+<div class="entry" data-name="gf^"><div class="sig">(gf^ a n)</div><div class="summary">Exponentiation in GF(p).</div></div>
+<div class="entry" data-name="gf-inv"><div class="sig">(gf-inv a)</div><div class="summary">Multiplicative inverse.</div></div>
+<div class="entry" data-name="gf-neg"><div class="sig">(gf-neg a)</div><div class="summary">Negation.</div></div>
+<div class="entry" data-name="latex"><div class="sig">(latex expr)</div><div class="summary">Convert to LaTeX string.</div></div>
+</div>
+</main>
+<script>
+const search = document.getElementById('search');
+const entries = [...document.querySelectorAll('.entry')];
+const shown = document.getElementById('shown');
+function refresh() {
+  const q = search.value.toLowerCase();
+  let n = 0;
+  for (const e of entries) {
+    const hit = !q || e.textContent.toLowerCase().includes(q) || e.dataset.name.toLowerCase().includes(q);
+    e.style.display = hit ? '' : 'none';
+    if (hit) n++;
+  }
+  shown.textContent = n;
+}
+search.addEventListener('input', refresh);
+refresh();
+</script>
+</body>
+</html>

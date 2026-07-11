@@ -53,4 +53,25 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    // WebAssembly build for the browser playground:
+    //   zig build wasm   -> docs/playground/lispium.wasm
+    const wasm_module = b.createModule(.{
+        .root_source_file = b.path("src/wasm.zig"),
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .wasm32,
+            .os_tag = .freestanding,
+        }),
+        .optimize = .ReleaseSmall,
+    });
+    wasm_module.addOptions("build_options", options);
+    const wasm_exe = b.addExecutable(.{
+        .name = "lispium",
+        .root_module = wasm_module,
+    });
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+    const wasm_install = b.addInstallFile(wasm_exe.getEmittedBin(), "../docs/playground/lispium.wasm");
+    const wasm_step = b.step("wasm", "Build the WebAssembly playground module");
+    wasm_step.dependOn(&wasm_install.step);
+
 }

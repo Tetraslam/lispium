@@ -455,6 +455,10 @@ fn makeBool(allocator: std.mem.Allocator, b: bool) BuiltinError!*Expr {
 
 pub fn builtin_load(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (load "file.lspm") - evaluates a file in the current environment
+    if (comptime @import("builtin").os.tag == .freestanding) {
+        // No file system in the browser playground
+        return BuiltinError.EvaluationError;
+    }
     if (args.items.len != 1 or args.items[0].* != .string) return BuiltinError.InvalidArgument;
     const io = env.io orelse return BuiltinError.EvaluationError;
     const path = args.items[0].string;
@@ -544,6 +548,10 @@ pub fn builtin_args(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 pub fn builtin_exit(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (exit) or (exit code) - terminates the process
     _ = env;
+    if (comptime @import("builtin").os.tag == .freestanding) {
+        // No process to exit in the browser playground
+        return BuiltinError.EvaluationError;
+    }
     var code: u8 = 0;
     if (args.items.len >= 1 and args.items[0].* == .number) {
         const n = args.items[0].number;
@@ -10217,6 +10225,32 @@ fn stepWriteExpr(expr: *const Expr, writer: anytype) !void {
         if (expr.* == .list) {
             try writer.print("{d}/{d}", .{ r.p, r.q });
             return;
+        }
+    }
+    // Physical quantities render as value + units (e.g. 27.78 m/s)
+    if (expr.* == .list) {
+        if (asQty(expr)) |q| {
+            if (expr.list.items[0].* == .symbol and std.mem.eql(u8, expr.list.items[0].symbol, "qty")) {
+                try writer.print("{d}", .{q.value});
+                var wrote = false;
+                for (dim_names, q.dims) |name, d| {
+                    if (d > 0) {
+                        try writer.print("{s}{s}", .{ if (wrote) "*" else " ", name });
+                        if (d != 1) try writer.print("^{d}", .{d});
+                        wrote = true;
+                    }
+                }
+                var first_div = true;
+                for (dim_names, q.dims) |name, d| {
+                    if (d < 0) {
+                        if (!wrote and first_div) try writer.print(" 1", .{});
+                        try writer.print("{s}{s}", .{ if (first_div) "/" else "*", name });
+                        if (d != -1) try writer.print("^{d}", .{-d});
+                        first_div = false;
+                    }
+                }
+                return;
+            }
         }
     }
     switch (expr.*) {
