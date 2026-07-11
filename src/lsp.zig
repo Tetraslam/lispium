@@ -130,6 +130,10 @@ const Server = struct {
             return try self.handleCompletion(id, params);
         } else if (std.mem.eql(u8, method_str, "textDocument/formatting")) {
             return try self.handleFormatting(id, params);
+        } else if (std.mem.eql(u8, method_str, "textDocument/definition")) {
+            return try self.handleDefinition(id, params);
+        } else if (std.mem.eql(u8, method_str, "textDocument/documentSymbol")) {
+            return try self.handleDocumentSymbol(id, params);
         }
 
         return null;
@@ -143,6 +147,8 @@ const Server = struct {
             \\    "textDocumentSync": 1,
             \\    "hoverProvider": true,
             \\    "documentFormattingProvider": true,
+            \\    "definitionProvider": true,
+            \\    "documentSymbolProvider": true,
             \\    "completionProvider": {{
             \\      "triggerCharacters": ["("]
             \\    }}
@@ -203,6 +209,94 @@ const Server = struct {
             self.allocator.free(kv.value.content);
             self.allocator.free(kv.value.uri);
         }
+    }
+
+    const Definition = struct { line: usize, character: usize, name_len: usize };
+    const NamedDef = struct { name: []const u8, def: Definition };
+
+    /// Scans document text for (define name ...), (define (name ...) ...),
+    /// and (defmacro (name ...) ...) top-level definitions.
+    fn findDefinitions(content: []const u8, allocator: std.mem.Allocator) !std.ArrayList(NamedDef) {
+        var defs: std.ArrayList(NamedDef) = .empty;
+        errdefer defs.deinit(allocator);
+
+        var line_num: usize = 0;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| : (line_num += 1) {
+            for ([_][]const u8{ "(define ", "(defmacro " }) |kw| {
+                var search_from: usize = 0;
+                while (std.mem.indexOfPos(u8, line, search_from, kw)) |kw_start| {
+                    search_from = kw_start + kw.len;
+                    var i = kw_start + kw.len;
+                    while (i < line.len and line[i] == ' ') i += 1;
+                    // Function form: (define (name ...) ...)
+                    if (i < line.len and line[i] == '(') i += 1;
+                    const name_start = i;
+                    while (i < line.len and isWordChar(line[i])) i += 1;
+                    if (i > name_start) {
+                        try defs.append(allocator, .{
+                            .name = line[name_start..i],
+                            .def = .{ .line = line_num, .character = name_start, .name_len = i - name_start },
+                        });
+                    }
+                }
+            }
+        }
+        return defs;
+    }
+
+    /// textDocument/definition: jump to the (define ...) of the word under
+    /// the cursor.
+    fn handleDefinition(self: *Server, id: ?std.json.Value, params: ?std.json.Value) ![]const u8 {
+        const p = params orelse return try self.makeResponse(id, "null");
+        const text_doc = p.object.get("textDocument") orelse return try self.makeResponse(id, "null");
+        const uri = text_doc.object.get("uri") orelse return try self.makeResponse(id, "null");
+        const position = p.object.get("position") orelse return try self.makeResponse(id, "null");
+        const doc = self.documents.get(uri.string) orelse return try self.makeResponse(id, "null");
+
+        const line_num: usize = @intCast(position.object.get("line").?.integer);
+        const char_num: usize = @intCast(position.object.get("character").?.integer);
+        const word = self.getWordAtPosition(doc.content, line_num, char_num);
+        if (word.len == 0) return try self.makeResponse(id, "null");
+
+        var defs = try findDefinitions(doc.content, self.allocator);
+        defer defs.deinit(self.allocator);
+        for (defs.items) |entry| {
+            if (std.mem.eql(u8, entry.name, word)) {
+                var buf: [512]u8 = undefined;
+                const loc = std.fmt.bufPrint(&buf,
+                    \\{{"uri": "{s}", "range": {{"start": {{"line": {d}, "character": {d}}}, "end": {{"line": {d}, "character": {d}}}}}}}
+                , .{ uri.string, entry.def.line, entry.def.character, entry.def.line, entry.def.character + entry.def.name_len }) catch return try self.makeResponse(id, "null");
+                return try self.makeResponse(id, loc);
+            }
+        }
+        return try self.makeResponse(id, "null");
+    }
+
+    /// textDocument/documentSymbol: outline of top-level definitions.
+    fn handleDocumentSymbol(self: *Server, id: ?std.json.Value, params: ?std.json.Value) ![]const u8 {
+        const p = params orelse return try self.makeResponse(id, "null");
+        const text_doc = p.object.get("textDocument") orelse return try self.makeResponse(id, "null");
+        const uri = text_doc.object.get("uri") orelse return try self.makeResponse(id, "null");
+        const doc = self.documents.get(uri.string) orelse return try self.makeResponse(id, "null");
+
+        var defs = try findDefinitions(doc.content, self.allocator);
+        defer defs.deinit(self.allocator);
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, "[");
+        for (defs.items, 0..) |entry, i| {
+            if (i > 0) try buf.appendSlice(self.allocator, ",");
+            var item_buf: [512]u8 = undefined;
+            // kind 12 = Function
+            const item = std.fmt.bufPrint(&item_buf,
+                \\{{"name": "{s}", "kind": 12, "location": {{"uri": "{s}", "range": {{"start": {{"line": {d}, "character": {d}}}, "end": {{"line": {d}, "character": {d}}}}}}}}}
+            , .{ entry.name, uri.string, entry.def.line, entry.def.character, entry.def.line, entry.def.character + entry.def.name_len }) catch continue;
+            try buf.appendSlice(self.allocator, item);
+        }
+        try buf.appendSlice(self.allocator, "]");
+        return try self.makeResponse(id, buf.items);
     }
 
     /// Whole-document formatting via the canonical Lispium formatter.
