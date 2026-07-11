@@ -486,6 +486,7 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
             } else {
                 try stderr.print("Eval error: {s}\n", .{err_msg});
             }
+            try printCallStack(stderr);
             return false;
         };
         defer {
@@ -656,6 +657,7 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
                 } else {
                     try stderr.print("{s}:{}: Eval error: {s}\n", .{ file_path, start_line, err_msg });
                 }
+                try printCallStack(stderr);
                 had_error = true;
                 expr_buf.clearRetainingCapacity();
                 paren_depth = 0;
@@ -710,6 +712,20 @@ fn writeEscapedString(writer: anytype, s: []const u8) !void {
         }
     }
     try writer.print("\"", .{});
+}
+
+/// Prints the user-function call chain recorded for the last error.
+fn printCallStack(writer: anytype) !void {
+    const frames = evaluator.takeCallStack();
+    if (frames.len == 0) return;
+    try writer.print("  call stack:", .{});
+    var i = frames.len;
+    while (i > 0) {
+        i -= 1;
+        try writer.print(" {s}", .{frames[i]});
+        if (i > 0) try writer.print(" <-", .{});
+    }
+    try writer.print("\n", .{});
 }
 
 fn printExprSimple(expr: *const Expr, writer: anytype) !void {

@@ -94,7 +94,7 @@ pub fn copyExpr(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*
                 new_params.append(allocator, param) catch return SimplifyError.OutOfMemory;
             }
             const new_body = try copyExpr(lam.body, allocator);
-            break :blk .{ .lambda = .{ .params = new_params, .body = new_body } };
+            break :blk .{ .lambda = .{ .params = new_params, .body = new_body, .name = lam.name } };
         },
     };
     return result;

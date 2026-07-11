@@ -29,6 +29,9 @@ pub const Expr = union(enum) {
     pub const Lambda = struct {
         params: std.ArrayList([]const u8),
         body: *Expr,
+        /// The define-time name (for stack traces and display); anonymous
+        /// lambdas have null
+        name: ?[]const u8 = null,
     };
 
     pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {

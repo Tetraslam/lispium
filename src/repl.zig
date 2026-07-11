@@ -426,6 +426,17 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
             } else {
                 try stdout.print("Error: {s}\n", .{err_msg});
             }
+            const frames = @import("evaluator.zig").takeCallStack();
+            if (frames.len > 0) {
+                try stdout.print("  call stack:", .{});
+                var fi = frames.len;
+                while (fi > 0) {
+                    fi -= 1;
+                    try stdout.print(" {s}", .{frames[fi]});
+                    if (fi > 0) try stdout.print(" <-", .{});
+                }
+                try stdout.print("\n", .{});
+            }
             expr_buf.clearRetainingCapacity();
             continue;
         };

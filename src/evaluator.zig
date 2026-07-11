@@ -32,6 +32,48 @@ pub const MAX_LOOP_ITERATIONS: i64 = 10_000_000;
 
 threadlocal var eval_depth: usize = 0;
 
+/// Call stack of user-function names for error reporting. Pushed on user
+/// lambda calls, popped on success, left intact when an error propagates so
+/// the CLI/REPL can show the chain. Tail calls replace the top frame.
+const CALL_STACK_MAX = 32;
+threadlocal var call_stack: [CALL_STACK_MAX][]const u8 = undefined;
+threadlocal var call_stack_len: usize = 0;
+threadlocal var call_stack_truncated: bool = false;
+
+fn pushCall(name: []const u8) void {
+    if (call_stack_len < CALL_STACK_MAX) {
+        call_stack[call_stack_len] = name;
+        call_stack_len += 1;
+    } else {
+        call_stack_truncated = true;
+    }
+}
+
+fn popCall() void {
+    if (call_stack_len > 0 and !call_stack_truncated) {
+        call_stack_len -= 1;
+    } else if (call_stack_truncated) {
+        call_stack_truncated = false;
+    }
+}
+
+/// Replaces the top frame name (used by tail calls, which reuse the frame
+/// like the evaluation itself does).
+fn replaceTopCall(name: []const u8) void {
+    if (call_stack_len > 0 and !call_stack_truncated) {
+        call_stack[call_stack_len - 1] = name;
+    }
+}
+
+/// Returns the recorded call chain (innermost last) and clears it.
+/// Call after an evaluation error to report a user-level stack trace.
+pub fn takeCallStack() []const []const u8 {
+    const frames = call_stack[0..call_stack_len];
+    call_stack_len = 0;
+    call_stack_truncated = false;
+    return frames;
+}
+
 /// Name of the builtin that most recently reported an error, so the REPL
 /// and CLI can say *which* function rejected its arguments.
 threadlocal var error_context_buf: [64]u8 = undefined;
@@ -41,6 +83,10 @@ fn setErrorContext(name: []const u8) void {
     const n = @min(name.len, error_context_buf.len);
     @memcpy(error_context_buf[0..n], name[0..n]);
     error_context_len = n;
+}
+
+fn takeErrorContextPeek() []const u8 {
+    return takeErrorContext();
 }
 
 /// Returns the name of the most recently failing builtin (empty if none),
@@ -158,9 +204,16 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                 // fallback instead (recoverable error handling)
                 if (std.mem.eql(u8, op_expr.symbol, "try")) {
                     if (expr.list.items.len != 3) return Error.InvalidSyntax;
+                    const saved_depth = call_stack_len;
                     const attempted = eval(expr.list.items[1], env) catch |err| switch (err) {
                         error.OutOfMemory => return err,
-                        else => return try eval(expr.list.items[2], env),
+                        else => {
+                            // Recovered: discard the failed branch's frames
+                            call_stack_len = saved_depth;
+                            call_stack_truncated = false;
+                            _ = takeErrorContextPeek();
+                            return try eval(expr.list.items[2], env);
+                        },
                     };
                     return attempted;
                 }
@@ -236,10 +289,14 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
 
             // If the operator evaluated to a lambda, call it
             if (evaled_op.* == .lambda) {
-                if (op_expr.* == .symbol and env.isTraced(op_expr.symbol)) {
-                    return try callLambdaTraced(op_expr.symbol, evaled_op, expr.list.items[1..], env);
-                }
-                return try callLambda(evaled_op, expr.list.items[1..], env);
+                pushCall(evaled_op.lambda.name orelse
+                    (if (op_expr.* == .symbol) op_expr.symbol else "<lambda>"));
+                const call_result = if (op_expr.* == .symbol and env.isTraced(op_expr.symbol))
+                    try callLambdaTraced(op_expr.symbol, evaled_op, expr.list.items[1..], env)
+                else
+                    try callLambda(evaled_op, expr.list.items[1..], env);
+                popCall();
+                return call_result;
             }
 
             // Otherwise, try builtin lookup (operator must be a symbol)
@@ -251,10 +308,13 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                 // Not a builtin - check if it's a user-defined function in variables
                 if (env.get(op_expr.symbol)) |val| {
                     if (val.* == .lambda) {
-                        if (env.isTraced(op_expr.symbol)) {
-                            return try callLambdaTraced(op_expr.symbol, val, expr.list.items[1..], env);
-                        }
-                        return try callLambda(val, expr.list.items[1..], env);
+                        pushCall(op_expr.symbol);
+                        const call_result = if (env.isTraced(op_expr.symbol))
+                            try callLambdaTraced(op_expr.symbol, val, expr.list.items[1..], env)
+                        else
+                            try callLambda(val, expr.list.items[1..], env);
+                        popCall();
+                        return call_result;
                     }
                 } else |_| {}
                 // Return as symbolic expression
@@ -550,7 +610,7 @@ fn evalDefmacro(expr: *Expr, env: *Env) Error!*Expr {
     const body_copy = try symbolic.copyExpr(body_src, env.allocator);
 
     const lambda_expr = try env.allocator.create(Expr);
-    lambda_expr.* = .{ .lambda = .{ .params = params, .body = body_copy } };
+    lambda_expr.* = .{ .lambda = .{ .params = params, .body = body_copy, .name = name } };
     try env.putMacro(name, lambda_expr);
 
     const result = try env.allocator.create(Expr);
@@ -829,7 +889,7 @@ fn evalDefine(expr: *Expr, env: *Env) Error!*Expr {
         const body_copy = try captureFreeVars(body_src, &shadowed, env);
 
         const lambda_expr = try env.allocator.create(Expr);
-        lambda_expr.* = .{ .lambda = .{ .params = params, .body = body_copy } };
+        lambda_expr.* = .{ .lambda = .{ .params = params, .body = body_copy, .name = func_name } };
 
         // If there's an old value, free it
         if (env.get(func_name)) |old| {
@@ -1229,6 +1289,15 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
                 }
                 for (body.list.items[1..]) |arg_expr| {
                     try new_args.append(env.allocator, try eval(arg_expr, env));
+                }
+
+                // The tail call reuses this frame: rename it for traces.
+                // Must happen before the old lambda (which owns `body`) is
+                // freed below.
+                if (evaled_op.lambda.name) |n| {
+                    replaceTopCall(n);
+                } else if (body.list.items[0].* == .symbol) {
+                    replaceTopCall(body.list.items[0].symbol);
                 }
 
                 // Swap in the new frame
