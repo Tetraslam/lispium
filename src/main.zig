@@ -27,6 +27,10 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn mainImpl(init: std.process.Init) !void {
+    // This thread has a 256 MiB stack (see main), so the evaluator can
+    // recurse much deeper than the conservative library default
+    evaluator.max_eval_depth = evaluator.MAX_EVAL_DEPTH;
+
     // The CLI uses the fast thread-safe allocator; leak detection is
     // covered by the test suite (which runs on std.testing.allocator).
     const allocator = std.heap.smp_allocator;

@@ -19,6 +19,12 @@ pub const Error = error{
 /// Maximum evaluator recursion depth. Prevents native stack overflow from
 /// deeply recursive user code or deeply nested expressions; exceeding it
 /// returns error.RecursionLimit instead of crashing.
+///
+/// The default is conservative enough for ordinary thread stacks (tests,
+/// embedders); the CLI raises it after moving onto its large-stack thread.
+pub var max_eval_depth: usize = 300;
+
+/// Kept for documentation/compat: the depth the CLI configures.
 pub const MAX_EVAL_DEPTH = 2000;
 
 /// Maximum number of iterations for (sum ...) and (product ...) loops.
@@ -48,7 +54,7 @@ pub fn takeErrorContext() []const u8 {
 pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
     eval_depth += 1;
     defer eval_depth -= 1;
-    if (eval_depth > MAX_EVAL_DEPTH) return Error.RecursionLimit;
+    if (eval_depth > max_eval_depth) return Error.RecursionLimit;
     return evalInner(expr, env);
 }
 
