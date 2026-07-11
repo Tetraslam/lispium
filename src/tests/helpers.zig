@@ -29,6 +29,7 @@ pub fn exprToString(allocator: std.mem.Allocator, expr: *const Expr) ![]u8 {
 
 pub fn writeExpr(expr: *const Expr, writer: anytype) !void {
     switch (expr.*) {
+        .string => |s| try writer.print("\"{s}\"", .{s}),
         .number => |n| {
             if (n == @floor(n) and @abs(n) < 1e15) {
                 try writer.print("{d:.0}", .{n});

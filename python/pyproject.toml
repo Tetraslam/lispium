@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lispium"
-version = "0.6.2"
+version = "0.7.0"
 description = "A Symbolic Computer Algebra System"
 readme = "README.md"
 license = {text = "MIT"}

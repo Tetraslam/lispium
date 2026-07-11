@@ -22,7 +22,6 @@ pub const INDENT = 2;
 pub const Error = error{
     OutOfMemory,
     UnbalancedParens,
-    UnsupportedString,
 };
 
 // ============================================================================
@@ -36,6 +35,8 @@ const Node = struct {
     children: std.ArrayList(*Node) = .empty,
     /// Trailing comment attached to this node (same line), without ';'
     trailing: ?[]const u8 = null,
+    /// Reader sugar prefix rendered immediately before the node (e.g. "'")
+    prefix: []const u8 = "",
 
     const Kind = enum {
         atom,
@@ -68,6 +69,8 @@ const Token = union(enum) {
     comment: struct { text: []const u8, own_line: bool },
     /// One or more blank lines in the source
     blank,
+    /// Reader sugar prefix: ' ` or ,
+    quote_sugar: []const u8,
 };
 
 fn lex(allocator: std.mem.Allocator, source: []const u8) Error!std.ArrayList(Token) {
@@ -122,7 +125,27 @@ fn lex(allocator: std.mem.Allocator, source: []const u8) Error!std.ArrayList(Tok
             i += 1;
             continue;
         }
-        if (c == '"') return Error.UnsupportedString;
+        if (c == '"') {
+            // String literal: single token including both quotes
+            var j = i + 1;
+            while (j < source.len) {
+                const ch = source[j];
+                if (ch == '\\' and j + 1 < source.len) {
+                    j += 2;
+                    continue;
+                }
+                j += 1;
+                if (ch == '"') break;
+            }
+            try tokens.append(allocator, .{ .atom = source[i..j] });
+            i = j;
+            continue;
+        }
+        if (c == '\'' or c == '`' or c == ',') {
+            try tokens.append(allocator, .{ .quote_sugar = source[i .. i + 1] });
+            i += 1;
+            continue;
+        }
 
         const start = i;
         while (i < source.len and source[i] != ' ' and source[i] != '\t' and
@@ -191,9 +214,70 @@ const ParseState = struct {
                         try list.append(self.allocator, node);
                     }
                 },
+                .quote_sugar => {
+                    // Collect a run of prefixes, then attach to the next node
+                    const mark = list.items.len;
+                    const start_pos = self.pos;
+                    while (self.pos < self.tokens.len) {
+                        switch (self.tokens[self.pos]) {
+                            .quote_sugar => self.pos += 1,
+                            else => break,
+                        }
+                    }
+                    try self.parseOne(list);
+                    if (list.items.len > mark) {
+                        // Slice the original source run as the prefix
+                        var prefix_buf: std.ArrayList(u8) = .empty;
+                        defer prefix_buf.deinit(self.allocator);
+                        var k = start_pos;
+                        while (k < self.pos) : (k += 1) {
+                            switch (self.tokens[k]) {
+                                .quote_sugar => |q| try prefix_buf.appendSlice(self.allocator, q),
+                                else => break,
+                            }
+                        }
+                        // Prefix bytes are contiguous in the source in practice;
+                        // reference the first token's slice extended by count
+                        const first = switch (self.tokens[start_pos]) {
+                            .quote_sugar => |q| q,
+                            else => unreachable,
+                        };
+                        list.items[mark].prefix = first.ptr[0..prefix_buf.items.len];
+                    }
+                },
             }
         }
         if (inside) return Error.UnbalancedParens;
+    }
+
+    /// Parses exactly one node (list or atom) into the list.
+    fn parseOne(self: *ParseState, list: *std.ArrayList(*Node)) Error!void {
+        if (self.pos >= self.tokens.len) return Error.UnbalancedParens;
+        switch (self.tokens[self.pos]) {
+            .lparen => {
+                self.pos += 1;
+                const node = try self.makeNode(.list);
+                errdefer {
+                    node.deinit(self.allocator);
+                    self.allocator.destroy(node);
+                }
+                try self.parseSeq(&node.children, true);
+                self.attachTrailing(node);
+                try list.append(self.allocator, node);
+            },
+            .atom => |text| {
+                self.pos += 1;
+                const node = try self.makeNode(.atom);
+                node.text = text;
+                self.attachTrailing(node);
+                try list.append(self.allocator, node);
+            },
+            .quote_sugar => {
+                // Nested sugar handled by the caller's accumulation loop
+                return Error.UnbalancedParens;
+            },
+            else => return Error.UnbalancedParens,
+        }
     }
 
     /// If the next token is a same-line trailing comment, attach it.
@@ -229,6 +313,12 @@ fn specialFormHeaderArgs(name: []const u8) ?usize {
         .{ "product", 3 },
         .{ "rule", 1 },
         .{ "matrix", 0 },
+        .{ "begin", 0 },
+        .{ "cond", 0 },
+        .{ "defmacro", 1 },
+        .{ "try", 1 },
+        .{ "when", 1 },
+        .{ "time", 0 },
     };
     inline for (forms) |f| {
         if (std.mem.eql(u8, name, f[0])) return f[1];
@@ -246,10 +336,10 @@ fn isBindingForm(name: []const u8) bool {
 /// flattened (contains standalone comments).
 fn flatWidth(node: *const Node) ?usize {
     switch (node.kind) {
-        .atom => return node.text.len + trailingWidth(node),
+        .atom => return node.prefix.len + node.text.len + trailingWidth(node),
         .comment, .blank => return null,
         .list => {
-            var width: usize = 2; // parens
+            var width: usize = 2 + node.prefix.len; // parens and sugar prefix
             for (node.children.items, 0..) |child, i| {
                 if (child.kind == .comment) return null;
                 if (child.trailing != null and i + 1 != node.children.items.len) return null;
@@ -290,6 +380,7 @@ const Renderer = struct {
     }
 
     fn renderFlat(self: *Renderer, node: *const Node) Error!void {
+        try self.write(node.prefix);
         switch (node.kind) {
             .atom => try self.write(node.text),
             .list => {
@@ -310,6 +401,7 @@ const Renderer = struct {
     fn render(self: *Renderer, node: *const Node, indent: usize) Error!void {
         switch (node.kind) {
             .atom => {
+                try self.write(node.prefix);
                 try self.write(node.text);
                 try self.writeTrailing(node);
             },
@@ -331,6 +423,7 @@ const Renderer = struct {
     }
 
     fn renderBroken(self: *Renderer, node: *const Node, indent: usize) Error!void {
+        try self.write(node.prefix);
         const items = node.children.items;
         if (items.len == 0) {
             try self.write("()");

@@ -144,6 +144,11 @@ fn getCurrentWord(input: []const u8) []const u8 {
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+    return runWithFile(allocator, io, null);
+}
+
+/// Starts the REPL, optionally (load)ing a file into the session first.
+pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u8) !void {
     // Every evaluated input line is kept alive for the whole session:
     // parsed symbols are slices into these buffers, and anything stored in
     // the environment (defines, rules, lambdas) must remain valid.
@@ -168,9 +173,38 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, stdin_buffer);
     const stdin = &stdin_reader.interface;
 
+    // Wire (print), (read), and (load) to the same stdio the REPL uses
+    env.out = stdout;
+    env.in = stdin;
+    env.io = io;
+
     // Multi-line expression buffer
     var expr_buf: std.ArrayList(u8) = .empty;
     defer expr_buf.deinit(allocator);
+
+    // Preload a file into the session when requested (lispium repl file.lspm)
+    if (preload) |path| {
+        const quoted = try std.fmt.allocPrint(allocator, "(load \"{s}\")", .{path});
+        defer allocator.free(quoted);
+        var tk = Tokenizer.init(quoted);
+        var toks: std.ArrayList([]const u8) = .empty;
+        defer toks.deinit(allocator);
+        while (tk.next()) |t| try toks.append(allocator, t);
+        var p = Parser.init(allocator, toks);
+        if (p.parseExpr()) |e| {
+            defer {
+                e.deinit(allocator);
+                allocator.destroy(e);
+            }
+            if (eval(e, &env)) |r| {
+                r.deinit(allocator);
+                allocator.destroy(r);
+                try stdout.print("loaded {s}\n", .{path});
+            } else |_| {
+                try stdout.print("failed to load {s}\n", .{path});
+            }
+        } else |_| {}
+    }
 
     // Print welcome message
     try stdout.print("Lispium {s} - Symbolic Computer Algebra System\n", .{version});
@@ -359,7 +393,8 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
                 error.UnexpectedToken => "unexpected token in expression",
                 error.UnexpectedEOF => "unexpected end of input (missing closing paren?)",
                 error.RecursionLimit => "expression too deeply nested",
-                error.UnsupportedString => "strings are not supported (use numbers and symbols)",
+                error.UnterminatedString => "unterminated string literal",
+                error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
                 error.OutOfMemory => "out of memory",
             };
             try stdout.print("Error: {s}\n", .{err_msg});
@@ -412,6 +447,19 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
             continue;
         };
         try stdout.print("\n", .{});
+
+        // Bind _ to the last result for quick reuse
+        if (@import("symbolic.zig").copyExpr(result, allocator)) |last| {
+            if (env.get("_")) |old_val| {
+                old_val.deinit(allocator);
+                allocator.destroy(old_val);
+            } else |_| {}
+            env.put("_", last) catch {
+                last.deinit(allocator);
+                allocator.destroy(last);
+            };
+        } else |_| {}
+
         expr_buf.clearRetainingCapacity();
     }
 }
@@ -444,7 +492,7 @@ fn validateExprInner(expr: *const Expr, visited: *std.AutoHashMap(usize, void), 
 
     switch (expr.*) {
         .number => {},
-        .symbol, .owned_symbol => {},
+        .symbol, .owned_symbol, .string => {},
         .lambda => |lam| {
             const body_ptr = @intFromPtr(lam.body);
             if (body_ptr == 0 or body_ptr == std.math.maxInt(usize)) {
@@ -494,6 +542,23 @@ fn printExpr(expr: *const Expr, writer: anytype) PrintError!void {
     try printExprPretty(expr, writer, true);
 }
 
+
+/// Writes a string literal with escapes so output is valid Lispium syntax.
+fn writeEscapedString(writer: anytype, s: []const u8) !void {
+    try writer.print("\"", .{});
+    for (s) |c| {
+        switch (c) {
+            '"' => try writer.print("\\\"", .{}),
+            '\\' => try writer.print("\\\\", .{}),
+            '\n' => try writer.print("\\n", .{}),
+            '\t' => try writer.print("\\t", .{}),
+            '\r' => try writer.print("\\r", .{}),
+            else => try writer.print("{c}", .{c}),
+        }
+    }
+    try writer.print("\"", .{});
+}
+
 fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!void {
     // Validate entire expression tree first
     if (is_top) {
@@ -502,6 +567,7 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
 
     switch (expr.*) {
         .number => |n| try printNum(n, writer),
+        .string => |s| try writeEscapedString(writer, s),
         .symbol, .owned_symbol => |s| {
             // Use Greek letters for common symbols
             if (std.mem.eql(u8, s, "pi")) {
@@ -536,6 +602,47 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
                     },
                     else => {},
                 }
+            }
+
+            // Physical quantities print as value followed by units
+            if (op != null and std.mem.eql(u8, op.?, "qty") and lst.items.len == 9 and
+                lst.items[1].* == .number)
+            {
+                try printNum(lst.items[1].number, writer);
+                const names = [_][]const u8{ "m", "kg", "s", "A", "K", "mol", "cd" };
+                // Positive-exponent units first
+                var wrote_unit = false;
+                for (names, 0..) |name, i| {
+                    if (lst.items[i + 2].* != .number) continue;
+                    const d = lst.items[i + 2].number;
+                    if (d > 0) {
+                        try writer.print("{s}{s}", .{ if (wrote_unit) "\xc2\xb7" else " ", name });
+                        if (d != 1) try writer.print("^{d}", .{d});
+                        wrote_unit = true;
+                    }
+                }
+                var first_div = true;
+                for (names, 0..) |name, i| {
+                    if (lst.items[i + 2].* != .number) continue;
+                    const d = lst.items[i + 2].number;
+                    if (d < 0) {
+                        if (!wrote_unit and first_div) try writer.print(" 1", .{});
+                        try writer.print("{s}{s}", .{ if (first_div) "/" else "\xc2\xb7", name });
+                        if (d != -1) try writer.print("^{d}", .{-d});
+                        first_div = false;
+                    }
+                }
+                return;
+            }
+
+            // Exact rationals print as p/q
+            if (op != null and std.mem.eql(u8, op.?, "rational") and lst.items.len == 3 and
+                lst.items[1].* == .number and lst.items[2].* == .number)
+            {
+                try printNum(lst.items[1].number, writer);
+                try writer.print("/", .{});
+                try printNum(lst.items[2].number, writer);
+                return;
             }
 
             // Prime factorization: (factors (2 2) (3 1)) -> 2^2 · 3

@@ -31,6 +31,21 @@ pub const Env = struct {
     builtins: std.StringHashMap(BuiltinFn),
     rules: std.ArrayList(Rule),
     assumptions: std.StringHashMap(Assumption),
+    /// Output sink for (print ...); null makes print a no-op (tests)
+    out: ?*std.Io.Writer = null,
+    /// Input source for (read); null makes read return the symbol eof
+    in: ?*std.Io.Reader = null,
+    /// Buffers owned by the environment (e.g. lines consumed by (read));
+    /// parsed symbols may reference these bytes, freed on deinit
+    owned_buffers: std.ArrayList([]u8) = .empty,
+    /// The Io instance for file access ((load ...)); null disables it
+    io: ?std.Io = null,
+    /// Command-line arguments after the script path, for (args)
+    script_args: []const []const u8 = &.{},
+    /// User-defined macros: name -> lambda whose body is a template
+    macros: ?std.StringHashMap(*Expr) = null,
+    /// Function names being traced by (trace name)
+    traced: ?std.StringHashMap(void) = null,
 
     pub fn init(allocator: std.mem.Allocator) Env {
         return Env{
@@ -45,6 +60,22 @@ pub const Env = struct {
     pub fn deinit(self: *Env) void {
         // The memoization cache allocates from this environment's allocator
         @import("builtins.zig").deinitMemoCache();
+        for (self.owned_buffers.items) |buf| self.allocator.free(buf);
+        self.owned_buffers.deinit(self.allocator);
+        if (self.traced) |*traced| {
+            var tit = traced.iterator();
+            while (tit.next()) |entry| self.allocator.free(entry.key_ptr.*);
+            traced.deinit();
+        }
+        if (self.macros) |*macros| {
+            var mit = macros.iterator();
+            while (mit.next()) |entry| {
+                entry.value_ptr.*.deinit(self.allocator);
+                self.allocator.destroy(entry.value_ptr.*);
+                self.allocator.free(entry.key_ptr.*);
+            }
+            macros.deinit();
+        }
         var it = self.variables.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.deinit(self.allocator);
@@ -69,6 +100,52 @@ pub const Env = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.assumptions.deinit();
+    }
+
+    /// Toggles tracing for a function name; returns the new state.
+    pub fn toggleTrace(self: *Env, name: []const u8) !bool {
+        if (self.traced == null) {
+            self.traced = std.StringHashMap(void).init(self.allocator);
+        }
+        if (self.traced.?.fetchRemove(name)) |kv| {
+            self.allocator.free(kv.key);
+            return false;
+        }
+        const owned = try self.allocator.dupe(u8, name);
+        try self.traced.?.put(owned, {});
+        return true;
+    }
+
+    pub fn isTraced(self: *Env, name: []const u8) bool {
+        if (self.traced) |traced| return traced.contains(name);
+        return false;
+    }
+
+    /// Registers a macro (takes ownership of the lambda expression).
+    pub fn putMacro(self: *Env, name: []const u8, lambda: *Expr) !void {
+        if (self.macros == null) {
+            self.macros = std.StringHashMap(*Expr).init(self.allocator);
+        }
+        if (self.macros.?.getEntry(name)) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(entry.value_ptr.*);
+            entry.value_ptr.* = lambda;
+        } else {
+            const owned_key = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(owned_key);
+            try self.macros.?.put(owned_key, lambda);
+        }
+    }
+
+    /// Looks up a macro by name.
+    pub fn getMacro(self: *Env, name: []const u8) ?*Expr {
+        if (self.macros) |macros| return macros.get(name);
+        return null;
+    }
+
+    /// Takes ownership of a buffer, freeing it when the environment dies.
+    pub fn keepBuffer(self: *Env, buf: []u8) !void {
+        try self.owned_buffers.append(self.allocator, buf);
     }
 
     pub fn assume(self: *Env, symbol: []const u8, assumption: Assumption) !void {

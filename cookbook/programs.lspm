@@ -1,0 +1,85 @@
+; Lispium Cookbook: Writing Programs
+; ==================================
+; Exact rationals, strings, quoting, macros, and program structure.
+
+; Exact rational arithmetic
+; -------------------------
+(/ 1 3)  ; => 1/3 (exact, not 0.333...)
+(+ 1/3 1/6)  ; => 1/2
+(^ 2 -4)  ; => 1/16
+(numer 22/7)  ; => 22
+(denom 22/7)  ; => 7
+(evalf 1/3)  ; => 0.3333333333333333 (explicit float conversion)
+
+; Strings
+; -------
+(concat "the answer is " (* 6 7))  ; => "the answer is 42"
+(length "hello")  ; => 5
+(substring "hello world" 0 5)  ; => "hello"
+(split "a,b,c" ",")  ; => (list "a" "b" "c")
+(string->number "22/7")  ; => 22/7
+(number->string 1/3)  ; => "1/3"
+
+; Quote and quasiquote
+; --------------------
+'(+ 1 2)  ; => (+ 1 2) (data, not evaluated)
+(car '(a b c))  ; => a
+`(+ 1 ,(* 2 3))  ; => (+ 1 6) (template with unquote)
+
+; Sequencing and conditionals
+; ---------------------------
+(begin (+ 1 1) (+ 2 2) (+ 3 3))  ; => 6 (returns the last)
+(cond ((< 3 2) "no") ((< 1 2) "yes") (else "fallback"))  ; => "yes"
+
+; Short-circuit logic: the division below never runs
+(and 0 (/ 1 0))  ; => 0
+(or 1 (/ 1 0))  ; => 1
+
+; Type predicates
+; ---------------
+(number? 1/3)  ; => 1
+(string? "hi")  ; => 1
+(list? (list 1 2))  ; => 1
+(null? (list))  ; => 1
+
+; apply and variadic functions
+; ----------------------------
+(apply + '(1 2 3 4))  ; => 10
+(define (my-average . xs) (/ (apply + xs) (length xs)))
+(my-average 1 2 3 4)  ; => 5/2
+
+; Error handling
+; --------------
+(try (/ 1 0) "recovered")  ; => "recovered"
+(assert (= (+ 1 1) 2) "math still works")
+
+; Macros: code that writes code
+; -----------------------------
+(defmacro (unless c a b) `(if ,c ,b ,a))
+(unless 0 "condition was false" "condition was true")
+
+; Tail recursion runs in constant stack space (TCO)
+(letrec ((count (lambda (n acc) (if (= n 0) acc (count (- n 1) (+ acc 1))))))
+  (count 100000 0))  ; => 100000
+
+; Closed-form sums
+; ----------------
+(sum i 1 n i)  ; => n(n+1)/2
+(sum i 1 n (^ i 2))  ; => n(n+1)(2n+1)/6
+(sum i 1 n (^ 2 i))  ; => 2^(n+1) - 2
+
+; Units and dimensional analysis
+; ------------------------------
+(* 5 (unit m))  ; 5 metres
+(/ (* 100 (unit km)) (unit h))  ; 100 km/h => 27.78 m/s
+(* (* 2 (unit kg)) (/ (* 5 (unit m)) (* 1 (unit s) (unit s))))  ; F = ma => 10 N
+(try (+ (unit m) (unit s)) "dimension error!")  ; adding m to s fails
+
+; Sorting and lookup
+; ------------------
+(sort (list 3 1 4 1 5))  ; => (list 1 1 3 4 5)
+(assoc 'b (list (list 'a 1) (list 'b 2)))  ; => (b 2)
+
+; Interactive programs use (print ...) and (read); run scripts with
+; arguments via: lispium run script.lspm arg1 arg2 (see (args)).
+; Executable scripts start with: #!/usr/bin/env -S lispium run

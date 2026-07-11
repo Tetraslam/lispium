@@ -17,6 +17,41 @@ pub fn installBuiltins(env: *Env) !void {
     try env.putBuiltin("ceil", builtins.builtin_ceil);
     try env.putBuiltin("round", builtins.builtin_round);
     try env.putBuiltin("sign", builtins.builtin_sign);
+    try env.putBuiltin("numer", builtins.builtin_numer);
+    try env.putBuiltin("denom", builtins.builtin_denom);
+
+    // Strings
+    try env.putBuiltin("concat", builtins.builtin_concat);
+    try env.putBuiltin("substring", builtins.builtin_substring);
+    try env.putBuiltin("string->number", builtins.builtin_string_to_number);
+    try env.putBuiltin("number->string", builtins.builtin_number_to_string);
+    try env.putBuiltin("split", builtins.builtin_split);
+
+    // I/O
+    try env.putBuiltin("print", builtins.builtin_print);
+    try env.putBuiltin("read", builtins.builtin_read);
+
+    // Type predicates and program structure
+    try env.putBuiltin("number?", builtins.builtin_is_number);
+    try env.putBuiltin("integer?", builtins.builtin_is_integer);
+    try env.putBuiltin("rational?", builtins.builtin_is_rational);
+    try env.putBuiltin("symbol?", builtins.builtin_is_symbol);
+    try env.putBuiltin("string?", builtins.builtin_is_string);
+    try env.putBuiltin("list?", builtins.builtin_is_list);
+    try env.putBuiltin("lambda?", builtins.builtin_is_lambda);
+    try env.putBuiltin("null?", builtins.builtin_is_null);
+    try env.putBuiltin("complex?", builtins.builtin_is_complex);
+    try env.putBuiltin("apply", builtins.builtin_apply);
+    try env.putBuiltin("error", builtins.builtin_error);
+    try env.putBuiltin("assert", builtins.builtin_assert);
+    try env.putBuiltin("load", builtins.builtin_load);
+    try env.putBuiltin("args", builtins.builtin_args);
+    try env.putBuiltin("exit", builtins.builtin_exit);
+    try env.putBuiltin("random", builtins.builtin_random);
+    try env.putBuiltin("random-seed", builtins.builtin_random_seed);
+    try env.putBuiltin("sort", builtins.builtin_sort);
+    try env.putBuiltin("assoc", builtins.builtin_assoc);
+    try env.putBuiltin("unit", builtins.builtin_unit);
 
     // Algebra
     try env.putBuiltin("simplify", builtins.builtin_simplify);

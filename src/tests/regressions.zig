@@ -36,7 +36,7 @@ test "regression: (/ x) is the reciprocal" {
     const allocator = testing.allocator;
     var env = try h.setupEnv(allocator);
     defer env.deinit();
-    try expectEval(allocator, &env, "(/ 4)", "0.25");
+    try expectEval(allocator, &env, "(/ 4)", "(rational 1 4)");
 }
 
 test "regression: define then call across statements (dangling-symbol bug)" {
@@ -251,11 +251,26 @@ test "regression: sum/product bounds are validated and capped" {
     try testing.expectError(error.InvalidArgument, h.eval(frac, &env));
 }
 
-test "regression: deep recursion errors instead of overflowing the stack" {
+test "regression: tail recursion runs in constant stack space (TCO)" {
     const allocator = testing.allocator;
     var env = try h.setupEnv(allocator);
     defer env.deinit();
-    const expr = try h.parseExpr(allocator, "(letrec ((loop (lambda (n) (if (= n 0) 0 (loop (- n 1)))))) (loop 100000))");
+    // Previously segfaulted around depth 1000; with proper tail calls this
+    // loops fine
+    try expectEval(
+        allocator,
+        &env,
+        "(letrec ((loop (lambda (n) (if (= n 0) 0 (loop (- n 1)))))) (loop 100000))",
+        "0",
+    );
+}
+
+test "regression: non-tail deep recursion still errors instead of crashing" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+    // (+ 1 (loop ...)) is not a tail call, so the depth guard applies
+    const expr = try h.parseExpr(allocator, "(letrec ((loop (lambda (n) (if (= n 0) 0 (+ 1 (loop (- n 1))))))) (loop 100000))");
     defer {
         expr.deinit(allocator);
         allocator.destroy(expr);

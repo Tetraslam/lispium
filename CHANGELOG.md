@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.7.0] - 2026-07-11
+
+The language release: Lispium graduates from expression evaluator to a
+small lisp with a serious CAS inside.
+
+### Added
+- **Exact rationals**: `1/3` literal syntax; exact `+ - * / ^ sqrt` with
+  normalization and float contagion; `numer`/`denom`/`rational?`;
+  `(+ 1/3 1/6)` => `1/2`. (i64-backed; overflow falls back to floats.)
+- **Strings**: `"..."` literals with escapes; `concat`, `substring`,
+  `split`, `string->number`, `number->string`, `length`.
+- **quote/quasiquote**: `'x`, `` `x ``, `,x` reader sugar and special forms.
+- **Macros**: `(defmacro (name params) template)` — params bind to
+  unevaluated args; `unless`/`while` are writable as user macros.
+- **Programs**: `begin`, `cond` (with `else`), short-circuit `and`/`or`,
+  multi-expression bodies, `apply`, variadic lambdas `(x . rest)`,
+  `try`/`error`/`assert`, type predicates (`number?` ... `complex?`),
+  `print`/`read` interactive I/O, `load`, `(args)`, `(exit)`, shebang
+  support, `random`/`random-seed`, `sort`, `assoc`.
+- **Tail-call optimization**: tail recursion (through if/begin/cond,
+  including mutual recursion) runs in constant stack space.
+- **Units**: `(unit m)` etc. (20 SI/derived units) with full dimensional
+  analysis through arithmetic; `100 km/h` => `27.78 m/s`; `m + s` errors.
+- **CAS**: closed-form symbolic sums (Faulhaber + geometric), cubic
+  equation solving (Cardano), n×n eigenvalues (3×3 exact via cubic, n≥4
+  QR iteration), integration by u-substitution and more patterns.
+- **Tooling**: `lispium test` runner for `*_test.lspm`; `lispium repl
+  file.lspm` preloads a session; `lispium eval -` reads stdin; `(time
+  expr)`; `(trace f)` call tracing; `_` holds the last REPL result.
+- All 38 new builtins/forms documented in the shared docs table (hover,
+  completion, `?func`); formatter understands strings, quote sugar, and
+  the new special forms; cookbook/programs.lspm tours everything.
+
 ## [0.6.2] - 2026-07-10
 
 ### Changed

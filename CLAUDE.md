@@ -25,7 +25,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 
 ```bash
 zig build run -- repl          # Run interactive REPL
-zig build test                 # Run all 515 tests
+zig build test                 # Run all 532 tests
 zig build test --summary all   # Run tests with verbose output showing names
 zig build -Doptimize=ReleaseSafe  # Build optimized release binary
 ```
@@ -50,16 +50,17 @@ Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with
 
 | File | Description |
 |------|-------------|
-| `builtins.zig` | 90+ builtin functions |
+| `builtins.zig` | 220+ builtin functions |
 | `symbolic.zig` | Core CAS engine |
 | `evaluator.zig` | Expression evaluator & special forms |
 | `registry.zig` | Single source of truth for builtin registration |
 | `formatter.zig` | Canonical source formatter (see STYLE.md) |
+| `docs.zig` | Single source of truth for builtin documentation |
 | `repl.zig` | Interactive shell |
 | `environment.zig` | Symbol table & assumptions |
 | `parser.zig` | Recursive descent parser |
 | `tokenizer.zig` | Lexical scanner |
-| `src/tests/*.zig` | 501 tests organized by feature |
+| `src/tests/*.zig` | 532 tests organized by feature |
 
 ---
 
@@ -278,6 +279,9 @@ pub const Expr = union(enum) {
 | `(solutions v1 v2 ...)` | Solution set | Result of `solve` |
 | `(quat w x y z)` | Quaternion | `(quat 1 2 3 4)` |
 | `(gf value prime)` | Finite field element | `(gf 3 7)` |
+| `(rational p q)` | Exact rational (literal syntax `p/q`) | `1/3` |
+| `(qty v m kg s A K mol cd)` | Physical quantity with SI dimensions | `(* 5 (unit m))` |
+| `"text"` | String (Expr variant `.string`, owned) | `"hello"` |
 | `(factors (p e) ...)` | Prime factorization | `(factors (2 2) (3 1))` |
 
 ---
@@ -484,7 +488,7 @@ return result;
 | `trace` | `(trace M)` | Trace (sum of diagonal) |
 | `matmul` | `(matmul A B)` | Matrix multiplication |
 | `inv` | `(inv M)` | Matrix inverse |
-| `eigenvalues` | `(eigenvalues M)` | Eigenvalues (2x2 only) |
+| `eigenvalues` | `(eigenvalues M)` | Eigenvalues: 2x2 exact (incl. symbolic), 3x3 via characteristic cubic, n×n numeric QR iteration |
 | `eigenvectors` | `(eigenvectors M)` | Eigenvectors (2x2 only) |
 | `lu` | `(lu M)` | LU decomposition |
 | `charpoly` | `(charpoly M var)` | Characteristic polynomial |
@@ -693,6 +697,60 @@ return result;
 
 ---
 
+### Exact Rationals (3 functions + literals)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| literal | `p/q` (e.g. `1/3`, `-22/7`) | Exact rational; `(/ 1 3)` also produces one |
+| `numer` | `(numer x)` | Numerator |
+| `denom` | `(denom x)` | Denominator |
+| `rational?` | `(rational? x)` | Predicate |
+
+Arithmetic on integers and rationals is exact (`(+ 1/3 1/6)` → `1/2`);
+mixing with floats produces floats. `evalf` converts to float.
+
+### Strings (6 functions + literals)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `concat` | `(concat s1 s2 ...)` | Concatenate (non-strings are rendered) |
+| `substring` | `(substring s start end)` | Slice `[start, end)` |
+| `split` | `(split s sep)` | Split into a list of strings |
+| `string->number` | `(string->number s)` | Parse a number or `p/q` rational |
+| `number->string` | `(number->string x)` | Render any expression |
+| `length` | `(length s)` | Byte length (also works on lists) |
+
+### Type Predicates (9 functions)
+
+`number?` `integer?` `rational?` `symbol?` `string?` `list?` `lambda?`
+`null?` `complex?` — all return 1/0.
+
+### I/O and Programs (8 functions)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `print` | `(print a b ...)` | Write args + newline (strings raw) |
+| `read` | `(read)` | Read and parse one line (symbol `eof` at end) |
+| `load` | `(load "file.lspm")` | Evaluate a file in the current env |
+| `args` | `(args)` | CLI args after the script path |
+| `exit` | `(exit [code])` | Terminate the process |
+| `apply` | `(apply f arg-list)` | Call f with list elements as args |
+| `error` | `(error msg...)` | Raise a user error |
+| `assert` | `(assert cond [msg])` | Error when cond is false |
+
+Scripts may start with `#!/usr/bin/env -S lispium run`. The `lispium test`
+subcommand runs `*_test.lspm` files and reports assert failures.
+
+### Misc Program Utilities (5 functions)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `random` | `(random [n])` | Float in [0,1) or integer in [0,n) |
+| `random-seed` | `(random-seed n)` | Deterministic seeding |
+| `sort` | `(sort lst)` | Ascending numeric/string sort |
+| `assoc` | `(assoc key alist)` | Lookup in a list of (key value) pairs |
+| `unit` | `(unit name)` | SI/derived unit quantity with dimensional checking through `+ - * / ^` |
+
 ## Symbolic CAS Operations
 
 Located in `symbolic.zig` (2,982 lines).
@@ -764,6 +822,9 @@ pub fn integrate(expr: *const Expr, var_name: []const u8, allocator: std.mem.All
 - Trig: `∫sin(x) dx` = `-cos(x)`, `∫cos(x) dx` = `sin(x)`
 - Sum rule: `∫(a + b) dx` = `∫a dx + ∫b dx`
 - Constant multiple: `∫c*f dx` = `c*∫f dx`
+- By parts (fixed patterns): `∫x sin x`, `∫x cos x`, `∫x eˣ`
+- u-substitution: `∫f(ax+b) dx` and `∫g'(x) f(g(x)) dx` for f ∈ {sin, cos, exp, xⁿ}
+- `∫tan x dx` = `-ln(cos x)`, `∫1/(1+x²) dx` = `atan(x)`
 
 ### Taylor Series
 
@@ -782,6 +843,7 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
 **Supported equations:**
 - Linear: `ax + b = 0` → `x = -b/a`
 - Quadratic: `ax² + bx + c = 0` → quadratic formula (includes complex roots)
+- Cubic: `ax³ + bx² + cx + d = 0` → Cardano / trigonometric method
 - Contradictions (e.g. `5 = 0`) return the symbol `no-solution`; identities return `all`
 
 ### Polynomial Operations
@@ -913,7 +975,8 @@ Summation notation. Evaluates `body` for each integer value of `var` from `start
 ```lisp
 (sum i 1 5 i)        ; => 15 (1+2+3+4+5)
 (sum i 1 5 (* i i))  ; => 55 (sum of squares)
-(sum i 1 n i)        ; Symbolic if bounds not numeric
+(sum i 1 n i)        ; => (/ (* n (+ n 1)) 2) - closed forms for polynomial
+                     ;    bodies (degree <= 3) and geometric r^i
 ```
 
 ### product
@@ -926,6 +989,57 @@ Product notation.
 
 ```lisp
 (product i 1 5 i)  ; => 120 (5!)
+```
+
+### begin / cond / and / or
+
+```lisp
+(begin e1 e2 ... en)          ; sequence, returns en
+(cond (test result...) ... (else result...))
+(and a b ...)  (or a b ...)   ; short-circuit; symbolic operands stay inert
+```
+
+`define`/`lambda` bodies accept multiple expressions (implicit `begin`).
+
+### quote / quasiquote
+
+```lisp
+'expr                          ; (quote expr) - data, not code
+`(f ,x)                        ; template; ,x evaluates (unquote)
+```
+
+### defmacro
+
+```lisp
+(defmacro (name params...) template)
+```
+
+Parameters bind to **unevaluated** argument expressions; the template
+(usually quasiquoted) builds the expansion, which is then evaluated.
+
+```lisp
+(defmacro (unless c a b) `(if ,c ,b ,a))
+```
+
+### try / time / trace
+
+```lisp
+(try expr fallback)            ; error recovery
+(time expr)                    ; prints wall-clock time
+(trace fn-name)                ; toggles call tracing for a user function
+```
+
+### Tail calls
+
+Tail-recursive calls (including through `if`/`begin`/`cond` and mutual
+recursion) run in constant stack space, so `(loop 1000000)` is fine.
+Non-tail recursion is bounded by `MAX_EVAL_DEPTH`.
+
+### Variadic lambdas
+
+```lisp
+(lambda (x . rest) body)       ; rest binds a (list ...) of extra args
+(define (f a . more) ...)
 ```
 
 ---
@@ -958,7 +1072,7 @@ which is assumption-aware via the environment):
 
 ## Test Organization
 
-Tests are organized in `src/tests/` with 515 tests across 39 files:
+Tests are organized in `src/tests/` with 532 tests across 41 files:
 
 | File | Tests | Coverage |
 |------|-------|----------|

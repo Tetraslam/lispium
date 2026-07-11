@@ -45,10 +45,16 @@ ad - bc
 
 ## Features
 
+- [x] Exact rational arithmetic (`1/3`, not `0.333...`)
+- [x] Strings, quote/quasiquote, and macros (defmacro)
+- [x] Interactive I/O (print, read), scripts with shebang + (args)
+- [x] Tail-call optimization (constant-stack loops)
+- [x] Error handling (try, error, assert) and a test runner
+- [x] Units with dimensional analysis
 - [x] Symbolic algebraic computation
 - [x] Differentiation and integration (indefinite & definite)
 - [x] Taylor series expansion
-- [x] Equation solving (linear & quadratic)
+- [x] Equation solving (linear, quadratic & cubic)
 - [x] Polynomial factoring
 - [x] Partial fractions decomposition
 - [x] Complex number arithmetic
@@ -100,6 +106,13 @@ Everything is a prefix S-expression: `(+ 1 2 3)` => `6`, `(^ 2 10)` => `1024`.
 (taylor (exp x) x 0 4)        ; => 1 + x + x²/2 + x³/6 + x⁴/24
 (limit (/ (sin x) x) x 0)     ; => 1 (L'Hôpital)
 (limit (^ (+ 1 (/ 1 x)) x) x inf)  ; => e
+
+; Exact arithmetic & programs
+(+ 1/3 1/6)                   ; => 1/2 (exact rationals)
+(defmacro (unless c a b) `(if ,c ,b ,a))
+(apply + '(1 2 3))            ; => 6
+(sum i 1 n i)                 ; => n(n+1)/2 (closed form)
+(/ (* 100 (unit km)) (unit h))  ; => 27.78 m/s (dimensional analysis)
 
 ; Algebra
 (simplify (+ (^ (sin x) 2) (^ (cos x) 2)))  ; => 1
@@ -183,4 +196,4 @@ zig build test               # run the suite
 zig build test --summary all # verbose, shows test names
 ```
 
-515 tests, 0 memory leaks.
+532 tests, 0 memory leaks.

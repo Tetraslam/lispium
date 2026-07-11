@@ -43,24 +43,40 @@ fn mainImpl(init: std.process.Init) !void {
 
     if (args_it.next()) |cmd| {
         if (std.mem.eql(u8, cmd, "repl")) {
-            try repl.run(allocator, io);
+            // Optional file argument preloads definitions into the session
+            const preload = args_it.next();
+            try repl.runWithFile(allocator, io, preload);
             return;
         } else if (std.mem.eql(u8, cmd, "eval")) {
-            // Evaluate a single expression: lispium eval "(+ 1 2)"
-            const expr_str = args_it.next() orelse {
-                try stderr.print("Usage: lispium eval \"<expression>\"\n", .{});
+            // Evaluate an expression: lispium eval "(+ 1 2)"  (or - for stdin)
+            const expr_arg = args_it.next() orelse {
+                try stderr.print("Usage: lispium eval \"<expression>\" (or - to read stdin)\n", .{});
                 return;
             };
-            const ok = try evalExpression(allocator, expr_str, stdout, stderr);
+            var stdin_text: ?[]u8 = null;
+            defer if (stdin_text) |t| allocator.free(t);
+            const expr_str = if (std.mem.eql(u8, expr_arg, "-")) blk: {
+                var rbuf: [64 * 1024]u8 = undefined;
+                var rdr: std.Io.File.Reader = .init(.stdin(), io, &rbuf);
+                var collected: std.Io.Writer.Allocating = .init(allocator);
+                defer collected.deinit();
+                _ = rdr.interface.streamRemaining(&collected.writer) catch {};
+                stdin_text = try collected.toOwnedSlice();
+                break :blk stdin_text.?;
+            } else expr_arg;
+            const ok = try evalExpression(allocator, io, expr_str, stdout, stderr);
             if (!ok) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "run")) {
             // Run a file: lispium run file.lisp
             const file_path = args_it.next() orelse {
-                try stderr.print("Usage: lispium run <file.lisp>\n", .{});
+                try stderr.print("Usage: lispium run <file.lspm> [args...]\n", .{});
                 return;
             };
-            const ok = try runFile(allocator, io, file_path, stdout, stderr);
+            var script_args: std.ArrayList([]const u8) = .empty;
+            defer script_args.deinit(allocator);
+            while (args_it.next()) |a| try script_args.append(allocator, a);
+            const ok = try runFile(allocator, io, file_path, script_args.items, stdout, stderr);
             if (!ok) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
@@ -71,6 +87,40 @@ fn mainImpl(init: std.process.Init) !void {
             return;
         } else if (std.mem.eql(u8, cmd, "lsp")) {
             try lsp.run(allocator, io);
+            return;
+        } else if (std.mem.eql(u8, cmd, "test")) {
+            // Run *_test.lspm files: lispium test [dir|files...]
+            var files: std.ArrayList([]const u8) = .empty;
+            defer files.deinit(allocator);
+            var owned_paths: std.ArrayList([]u8) = .empty;
+            defer {
+                for (owned_paths.items) |p| allocator.free(p);
+                owned_paths.deinit(allocator);
+            }
+            var explicit: std.ArrayList([]const u8) = .empty;
+            defer explicit.deinit(allocator);
+            while (args_it.next()) |a| try explicit.append(allocator, a);
+            if (explicit.items.len == 0) try explicit.append(allocator, ".");
+            for (explicit.items) |path| {
+                if (try collectTestFiles(allocator, io, path, &owned_paths, &files, stderr)) continue;
+                try files.append(allocator, path);
+            }
+            if (files.items.len == 0) {
+                try stderr.print("No *_test.lspm files found\n", .{});
+                std.process.exit(1);
+            }
+            var failed: usize = 0;
+            for (files.items) |path| {
+                const ok = try runFileImpl(allocator, io, path, &.{}, stdout, stderr, true);
+                if (ok) {
+                    try stdout.print("ok   {s}\n", .{path});
+                } else {
+                    try stdout.print("FAIL {s}\n", .{path});
+                    failed += 1;
+                }
+            }
+            try stdout.print("\n{d} file(s), {d} failed\n", .{ files.items.len, failed });
+            if (failed > 0) std.process.exit(1);
             return;
         } else if (std.mem.eql(u8, cmd, "fmt")) {
             // Format source files in place (like zig fmt).
@@ -206,6 +256,44 @@ fn collectLspmFiles(
     return true;
 }
 
+/// Recursively collects *_test.lspm files from a directory. Returns false
+/// when `path` is not a directory.
+fn collectTestFiles(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    owned_paths: *std.ArrayList([]u8),
+    out: *std.ArrayList([]const u8),
+    stderr: anytype,
+) !bool {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.NotDir => return false,
+        else => {
+            try stderr.print("Error opening '{s}': {}\n", .{ dir_path, err });
+            return true;
+        },
+    };
+    defer dir.close(io);
+
+    var walker = dir.walkSelectively(allocator) catch return error.OutOfMemory;
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            const skip = std.mem.startsWith(u8, entry.basename, ".") or
+                std.mem.eql(u8, entry.basename, "zig-out") or
+                std.mem.eql(u8, entry.basename, "node_modules");
+            if (!skip) try walker.enter(io, entry);
+            continue;
+        }
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.basename, "_test.lspm")) {
+            const full = try std.fs.path.join(allocator, &.{ dir_path, entry.path });
+            try owned_paths.append(allocator, full);
+            try out.append(allocator, full);
+        }
+    }
+    return true;
+}
+
 /// Formats each file in place (the default). --check reports unformatted
 /// files and fails; --stdout prints the formatted source instead of writing.
 fn formatFiles(
@@ -229,7 +317,6 @@ fn formatFiles(
         const formatted = formatter.format(allocator, source) catch |err| {
             const msg = switch (err) {
                 error.UnbalancedParens => "unbalanced parentheses",
-                error.UnsupportedString => "strings are not supported",
                 error.OutOfMemory => "out of memory",
             };
             try stderr.print("{s}: format error: {s}\n", .{ path, msg });
@@ -264,10 +351,11 @@ fn printUsage(writer: anytype) !void {
         \\Lispium {s} - A Symbolic Computer Algebra System
         \\
         \\Usage:
-        \\  lispium repl              Start interactive REPL
+        \\  lispium repl [file.lspm]  Start interactive REPL (optionally preloading a file)
         \\  lispium eval "<expr>"     Evaluate a single expression
         \\  lispium run <file.lspm>   Run a Lispium source file
         \\  lispium fmt [paths...]    Format source in place (--check for CI, --stdout to print)
+        \\  lispium test [dir|files]  Run *_test.lspm files (assert-based tests)
         \\  lispium bench [options]   Run benchmark suite
         \\  lispium lsp               Start language server (for editors)
         \\  lispium help              Show this help message
@@ -288,10 +376,17 @@ fn printUsage(writer: anytype) !void {
     , .{version});
 }
 
-fn evalExpression(allocator: std.mem.Allocator, input: []const u8, stdout: anytype, stderr: anytype) !bool {
+fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, stdout: anytype, stderr: anytype) !bool {
     var env = Env.init(allocator);
     defer env.deinit();
     try registry.installBuiltins(&env);
+
+    // Wire (print), (read), and (load) to the process stdio and io
+    env.out = stdout;
+    env.io = io;
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
+    env.in = &stdin_reader.interface;
 
     // Tokenize
     var tokenizer = Tokenizer.init(input);
@@ -322,7 +417,8 @@ fn evalExpression(allocator: std.mem.Allocator, input: []const u8, stdout: anyty
                 error.UnexpectedToken => "unexpected token in expression",
                 error.UnexpectedEOF => "unexpected end of input (missing closing paren?)",
                 error.RecursionLimit => "expression too deeply nested",
-                error.UnsupportedString => "strings are not supported (use numbers and symbols)",
+                error.UnterminatedString => "unterminated string literal",
+                error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
                 error.OutOfMemory => "out of memory",
             };
             try stderr.print("Parse error: {s}\n", .{err_msg});
@@ -368,7 +464,11 @@ fn evalExpression(allocator: std.mem.Allocator, input: []const u8, stdout: anyty
     return true;
 }
 
-fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdout: anytype, stderr: anytype) !bool {
+fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, script_args: []const []const u8, stdout: anytype, stderr: anytype) !bool {
+    return runFileImpl(allocator, io, file_path, script_args, stdout, stderr, false);
+}
+
+fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, script_args: []const []const u8, stdout: anytype, stderr: anytype, quiet: bool) !bool {
     // Read file
     const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024 * 10)) catch |err| {
         try stderr.print("Error reading file '{s}': {}\n", .{ file_path, err });
@@ -389,6 +489,14 @@ fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdo
     defer env.deinit();
     try registry.installBuiltins(&env);
 
+    // Wire (print), (read), and (load) to the process stdio and io
+    env.out = stdout;
+    env.io = io;
+    env.script_args = script_args;
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
+    env.in = &stdin_reader.interface;
+
     // Process expressions, handling multi-line expressions
     var line_num: usize = 0;
     var start_line: usize = 0;
@@ -400,6 +508,9 @@ fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdo
 
     while (lines.next()) |raw_line| {
         line_num += 1;
+
+        // Skip a shebang line so .lspm files can be executable scripts
+        if (line_num == 1 and std.mem.startsWith(u8, raw_line, "#!")) continue;
 
         // Trim whitespace
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -473,7 +584,8 @@ fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdo
                     error.UnexpectedToken => "unexpected token",
                     error.UnexpectedEOF => "unexpected end of input",
                     error.RecursionLimit => "expression too deeply nested",
-                error.UnsupportedString => "strings are not supported (use numbers and symbols)",
+                error.UnterminatedString => "unterminated string literal",
+                error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
                     error.OutOfMemory => "out of memory",
                 };
                 try stderr.print("{s}:{}: Parse error: {s}\n", .{ file_path, start_line, err_msg });
@@ -518,6 +630,18 @@ fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdo
                 allocator.destroy(result);
             }
 
+            // Statements that print for themselves aren't echoed again;
+            // quiet mode (the test runner) suppresses all echoes
+            const is_print_stmt = quiet or (expr.* == .list and expr.list.items.len > 0 and
+                expr.list.items[0].* == .symbol and
+                (std.mem.eql(u8, expr.list.items[0].symbol, "print") or
+                    std.mem.eql(u8, expr.list.items[0].symbol, "begin")));
+            if (is_print_stmt) {
+                expr_buf.clearRetainingCapacity();
+                paren_depth = 0;
+                continue;
+            }
+
             // Print a condensed version of the expression and result
             const display_expr = if (expr_buf.items.len > 60)
                 expr_buf.items[0..57]
@@ -535,6 +659,23 @@ fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, stdo
     return !had_error;
 }
 
+
+/// Writes a string literal with escapes so output is valid Lispium syntax.
+fn writeEscapedString(writer: anytype, s: []const u8) !void {
+    try writer.print("\"", .{});
+    for (s) |c| {
+        switch (c) {
+            '"' => try writer.print("\\\"", .{}),
+            '\\' => try writer.print("\\\\", .{}),
+            '\n' => try writer.print("\\n", .{}),
+            '\t' => try writer.print("\\t", .{}),
+            '\r' => try writer.print("\\r", .{}),
+            else => try writer.print("{c}", .{c}),
+        }
+    }
+    try writer.print("\"", .{});
+}
+
 fn printExprSimple(expr: *const Expr, writer: anytype) !void {
     switch (expr.*) {
         .number => |n| {
@@ -549,9 +690,21 @@ fn printExprSimple(expr: *const Expr, writer: anytype) !void {
         },
         .symbol => |s| try writer.print("{s}", .{s}),
         .owned_symbol => |s| try writer.print("{s}", .{s}),
+        .string => |s| try writeEscapedString(writer, s),
         .list => |lst| {
             if (lst.items.len == 0) {
                 try writer.print("()", .{});
+                return;
+            }
+            // Exact rationals print as p/q (re-parseable literal syntax)
+            if (lst.items.len == 3 and lst.items[0].* == .symbol and
+                std.mem.eql(u8, lst.items[0].symbol, "rational") and
+                lst.items[1].* == .number and lst.items[2].* == .number)
+            {
+                try writer.print("{d}/{d}", .{
+                    @as(i64, @intFromFloat(lst.items[1].number)),
+                    @as(i64, @intFromFloat(lst.items[2].number)),
+                });
                 return;
             }
             // Raw text results (plots, SVG, step-by-step output)

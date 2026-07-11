@@ -93,7 +93,8 @@ test "sum: symbolic upper bound" {
     try testing.expect(result.* == .list);
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(sum i 1 n i)", str);
+    // Closed form: sum of i from 1 to n = n(n+1)/2
+    try testing.expectEqualStrings("(/ (* n (+ n 1)) 2)", str);
 }
 
 test "sum: with power function" {

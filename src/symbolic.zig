@@ -13,6 +13,10 @@ const MAX_RECURSION_DEPTH = 100;
 
 pub fn exprEqual(a: *const Expr, b: *const Expr) bool {
     switch (a.*) {
+        .string => |s| {
+            if (b.* == .string) return std.mem.eql(u8, s, b.string);
+            return false;
+        },
         .number => |n| {
             if (b.* == .number) {
                 return n == b.number;
@@ -55,6 +59,13 @@ pub fn copyExpr(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*
 
     result.* = switch (expr.*) {
         .number => |n| .{ .number = n },
+        .string => |s| blk: {
+            const duped = allocator.dupe(u8, s) catch {
+                allocator.destroy(result);
+                return SimplifyError.OutOfMemory;
+            };
+            break :blk .{ .string = duped };
+        },
         .symbol => |s| .{ .symbol = s },
         .owned_symbol => |s| blk: {
             // Copy the owned string to a new allocation
@@ -105,6 +116,7 @@ fn makeSymbol(allocator: std.mem.Allocator, s: []const u8) SimplifyError!*Expr {
 pub fn containsVariable(expr: *const Expr, var_name: []const u8) bool {
     switch (expr.*) {
         .number => return false,
+        .string => return false,
         .symbol => |s| return std.mem.eql(u8, s, var_name),
         .owned_symbol => |s| return std.mem.eql(u8, s, var_name),
         .list => |lst| {
@@ -154,6 +166,7 @@ fn simplifyInternal(expr: *const Expr, allocator: std.mem.Allocator, depth: usiz
     switch (expr.*) {
         .number => return try copyExpr(expr, allocator),
         .symbol, .owned_symbol => return try copyExpr(expr, allocator),
+        .string => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator),
         .list => |lst| {
             if (lst.items.len == 0) return try copyExpr(expr, allocator);
@@ -998,7 +1011,7 @@ pub fn diff(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocato
 
 fn diffInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (expr.*) {
-        .number => {
+        .number, .string => {
             return try makeNumber(allocator, 0);
         },
         .symbol, .owned_symbol => |s| {
@@ -1504,6 +1517,126 @@ fn integrateByParts(u: *const Expr, v: *const Expr, var_name: []const u8, alloca
     return null;
 }
 
+/// Antiderivative F for a known outer function f applied to u, so that
+/// d/dx F(u) = f(u) * u'. Supported: sin, cos, exp, and (^ u n) with n != -1.
+fn outerAntiderivative(fname: []const u8, u: *const Expr, n: ?f64, allocator: std.mem.Allocator) SimplifyError!?*Expr {
+    if (std.mem.eql(u8, fname, "sin")) {
+        // ∫sin(u)du = -cos(u)
+        const cos_op = try makeSymbol(allocator, "cos");
+        const u_copy = try copyExpr(u, allocator);
+        const cos_u = try makeList(allocator, &[_]*Expr{ cos_op, u_copy });
+        return try makeUnaryOp(allocator, "-", cos_u);
+    }
+    if (std.mem.eql(u8, fname, "cos")) {
+        const sin_op = try makeSymbol(allocator, "sin");
+        const u_copy = try copyExpr(u, allocator);
+        return try makeList(allocator, &[_]*Expr{ sin_op, u_copy });
+    }
+    if (std.mem.eql(u8, fname, "exp")) {
+        const exp_op = try makeSymbol(allocator, "exp");
+        const u_copy = try copyExpr(u, allocator);
+        return try makeList(allocator, &[_]*Expr{ exp_op, u_copy });
+    }
+    if (std.mem.eql(u8, fname, "^")) {
+        const exponent = n orelse return null;
+        if (exponent == -1) {
+            // ∫u^-1 du = ln(u)
+            const ln_op = try makeSymbol(allocator, "ln");
+            const u_copy = try copyExpr(u, allocator);
+            return try makeList(allocator, &[_]*Expr{ ln_op, u_copy });
+        }
+        const u_copy = try copyExpr(u, allocator);
+        const np1 = try makeNumber(allocator, exponent + 1);
+        const power = try makeBinOp(allocator, "^", u_copy, np1);
+        const divisor = try makeNumber(allocator, exponent + 1);
+        return try makeBinOp(allocator, "/", power, divisor);
+    }
+    return null;
+}
+
+/// u-substitution for f(u) where u' is a nonzero constant:
+/// ∫f(u) dx = F(u) / u'. Returns null when u' isn't constant.
+fn integrateBySubstitution(fname: []const u8, u: *const Expr, n: ?f64, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!?*Expr {
+    if (!containsVariable(u, var_name)) return null;
+    const du = try diff(u, var_name, allocator);
+    defer {
+        du.deinit(allocator);
+        allocator.destroy(du);
+    }
+    if (du.* != .number or du.number == 0) return null;
+
+    const F = (try outerAntiderivative(fname, u, n, allocator)) orelse return null;
+    if (du.number == 1) return F;
+    const c = try makeNumber(allocator, du.number);
+    return try makeBinOp(allocator, "/", F, c);
+}
+
+/// Product u-substitution: ∫ A * f(u) dx = c * F(u) when A = c * u' for a
+/// constant c. Returns null when the pattern doesn't apply.
+fn integrateProductSub(factor_expr: *const Expr, fexpr: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!?*Expr {
+    if (fexpr.* != .list or fexpr.list.items.len < 2) return null;
+    if (fexpr.list.items[0].* != .symbol) return null;
+    const fname = fexpr.list.items[0].symbol;
+
+    var u: *const Expr = undefined;
+    var n: ?f64 = null;
+    if (std.mem.eql(u8, fname, "^") and fexpr.list.items.len == 3 and fexpr.list.items[2].* == .number) {
+        u = fexpr.list.items[1];
+        n = fexpr.list.items[2].number;
+    } else if ((std.mem.eql(u8, fname, "sin") or std.mem.eql(u8, fname, "cos") or
+        std.mem.eql(u8, fname, "exp")) and fexpr.list.items.len == 2)
+    {
+        u = fexpr.list.items[1];
+    } else {
+        return null;
+    }
+    if (!containsVariable(u, var_name)) return null;
+    // The inner must be non-trivial (otherwise plain rules already handle it)
+    if (u.* == .symbol) return null;
+
+    const du = try diff(u, var_name, allocator);
+    defer {
+        du.deinit(allocator);
+        allocator.destroy(du);
+    }
+
+    // ratio = A / u' must be a nonzero constant. Compare structurally by
+    // peeling numeric coefficients: A = cA * base, u' = cD * base.
+    var ratio_val: ?f64 = null;
+    {
+        const cb_a = extractCoeffBase(@constCast(factor_expr));
+        const cb_d = extractCoeffBase(du);
+        if (exprEqualCanonical(cb_a.base, cb_d.base)) {
+            const ca = cb_a.coeff orelse 1.0;
+            const cd = cb_d.coeff orelse 1.0;
+            if (cd != 0) ratio_val = ca / cd;
+        }
+    }
+    if (ratio_val == null) {
+        // Fallback: let the simplifier try the quotient
+        const a_copy = try copyExpr(factor_expr, allocator);
+        const du_copy = try copyExpr(du, allocator);
+        const ratio_expr = try makeBinOp(allocator, "/", a_copy, du_copy);
+        defer {
+            ratio_expr.deinit(allocator);
+            allocator.destroy(ratio_expr);
+        }
+        const ratio = try simplify(ratio_expr, allocator);
+        defer {
+            ratio.deinit(allocator);
+            allocator.destroy(ratio);
+        }
+        if (ratio.* == .number and ratio.number != 0) ratio_val = ratio.number;
+    }
+    const rv = ratio_val orelse return null;
+    if (rv == 0) return null;
+
+    const F = (try outerAntiderivative(fname, u, n, allocator)) orelse return null;
+    if (rv == 1) return F;
+    const c = try makeNumber(allocator, rv);
+    return try makeBinOp(allocator, "*", c, F);
+}
+
 /// Integrates an expression with respect to a variable and simplifies the result.
 /// Returns a NEW expression that the caller owns.
 /// Note: This is symbolic integration for basic patterns only.
@@ -1518,6 +1651,7 @@ pub fn integrate(expr: *const Expr, var_name: []const u8, allocator: std.mem.All
 
 fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (expr.*) {
+        .string => return try copyExpr(expr, allocator),
         .number => |n| {
             // ∫c dx = c*x
             const c = try makeNumber(allocator, n);
@@ -1598,6 +1732,14 @@ fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem
                         return result;
                     }
                     if (try integrateByParts(second, first, var_name, allocator)) |result| {
+                        return result;
+                    }
+
+                    // u-substitution: ∫ g'(x) f(g(x)) dx = F(g(x))
+                    if (try integrateProductSub(first, second, var_name, allocator)) |result| {
+                        return result;
+                    }
+                    if (try integrateProductSub(second, first, var_name, allocator)) |result| {
                         return result;
                     }
                 }
@@ -1689,6 +1831,12 @@ fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem
                     }
                 }
             } else if (std.mem.eql(u8, op.symbol, "sin")) {
+                // ∫sin(u) dx with constant u' (u-substitution)
+                if (lst.items.len == 2 and lst.items[1].* != .symbol) {
+                    if (try integrateBySubstitution("sin", lst.items[1], null, var_name, allocator)) |result| {
+                        return result;
+                    }
+                }
                 // ∫sin(x) dx = -cos(x)
                 if (lst.items.len == 2) {
                     const arg = lst.items[1];
@@ -1701,6 +1849,12 @@ fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem
                     }
                 }
             } else if (std.mem.eql(u8, op.symbol, "cos")) {
+                // ∫cos(u) dx with constant u' (u-substitution)
+                if (lst.items.len == 2 and lst.items[1].* != .symbol) {
+                    if (try integrateBySubstitution("cos", lst.items[1], null, var_name, allocator)) |result| {
+                        return result;
+                    }
+                }
                 // ∫cos(x) dx = sin(x)
                 if (lst.items.len == 2) {
                     const arg = lst.items[1];
@@ -1756,6 +1910,7 @@ fn expandInternal(expr: *const Expr, allocator: std.mem.Allocator, depth: usize)
     switch (expr.*) {
         .number => return try copyExpr(expr, allocator),
         .symbol, .owned_symbol => return try copyExpr(expr, allocator),
+        .string => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator),
         .list => |lst| {
             if (lst.items.len == 0) return try copyExpr(expr, allocator);
@@ -1853,6 +2008,7 @@ fn expandInternal(expr: *const Expr, allocator: std.mem.Allocator, depth: usize)
 pub fn substitute(expr: *const Expr, var_name: []const u8, value: *const Expr, allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (expr.*) {
         .number => return try copyExpr(expr, allocator),
+        .string => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator), // Don't substitute inside lambdas (lexical scope)
         .symbol, .owned_symbol => |s| {
             if (std.mem.eql(u8, s, var_name)) {
@@ -1891,6 +2047,7 @@ fn evalNumeric(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*E
     switch (expr.*) {
         .number => return try copyExpr(expr, allocator),
         .symbol, .owned_symbol => return try copyExpr(expr, allocator),
+        .string => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator),
         .list => |lst| {
             if (lst.items.len == 0) return try copyExpr(expr, allocator);
@@ -2012,7 +2169,7 @@ fn evalNumeric(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*E
 fn hasUndefinedValue(expr: *const Expr) bool {
     switch (expr.*) {
         .number => |n| return !std.math.isFinite(n),
-        .symbol, .owned_symbol, .lambda => return false,
+        .symbol, .owned_symbol, .string, .lambda => return false,
         .list => |lst| {
             if (lst.items.len > 0 and lst.items[0].* == .symbol) {
                 const op = lst.items[0].symbol;
@@ -2201,8 +2358,15 @@ fn collectPolyCoeffs(expr: *const Expr, var_name: []const u8, allocator: std.mem
     return result;
 }
 
+/// Public wrapper: numeric polynomial coefficients of expr in var_name
+/// (degree <= 4), or null when the expression isn't such a polynomial.
+pub fn getPolyCoeffsFor(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!?[]f64 {
+    return collectPolyCoeffs(expr, var_name, allocator);
+}
+
 fn collectPolyCoeffsInner(expr: *const Expr, var_name: []const u8, coeffs: *[5]f64, max_degree: *usize) SimplifyError!bool {
     switch (expr.*) {
+        .string => return false,
         .number => |n| {
             coeffs[0] += n;
             return true;
@@ -2445,6 +2609,9 @@ pub fn solve(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocat
                 result.* = .{ .list = solutions };
                 return result;
             }
+        } else if (coeffs.len == 4 and coeffs[3] != 0) {
+            // Cubic: a*x^3 + b*x^2 + c*x + d = 0
+            return try cubicRoots(coeffs[3], coeffs[2], coeffs[1], coeffs[0], allocator);
         }
     }
 
@@ -2654,6 +2821,75 @@ fn factorFromCoeffs(coeffs: []const f64, var_name: []const u8, allocator: std.me
     }
     // Fallback
     const x = try makeSymbol(allocator, var_name);
+    return x;
+}
+
+/// Roots of a*x^3 + b*x^2 + c*x + d = 0 via Cardano / the trigonometric
+/// method, returned as a (solutions ...) expression. Used by solve and by
+/// 3x3 eigenvalue computation.
+pub fn cubicRoots(a3: f64, b3: f64, c3: f64, d3: f64, allocator: std.mem.Allocator) SimplifyError!*Expr {
+    // Depressed cubic t^3 + p t + q with x = t - b/(3a)
+    const shift = -b3 / (3 * a3);
+    const p = (3 * a3 * c3 - b3 * b3) / (3 * a3 * a3);
+    const q = (2 * b3 * b3 * b3 - 9 * a3 * b3 * c3 + 27 * a3 * a3 * d3) /
+        (27 * a3 * a3 * a3);
+    const disc = -4 * p * p * p - 27 * q * q;
+
+    var solutions: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (solutions.items) |s| {
+            s.deinit(allocator);
+            allocator.destroy(s);
+        }
+        solutions.deinit(allocator);
+    }
+    const list_op = try makeSymbol(allocator, "solutions");
+    solutions.append(allocator, list_op) catch return SimplifyError.OutOfMemory;
+
+    if (disc > 0) {
+        // Three distinct real roots (trigonometric method)
+        const m = 2 * @sqrt(-p / 3);
+        const theta = std.math.acos(3 * q / (p * m)) / 3;
+        var k: usize = 0;
+        while (k < 3) : (k += 1) {
+            const t = m * @cos(theta - 2 * std.math.pi * @as(f64, @floatFromInt(k)) / 3);
+            solutions.append(allocator, try makeNumber(allocator, snapRoot(t + shift))) catch return SimplifyError.OutOfMemory;
+        }
+    } else {
+        // One real root (Cardano) plus a conjugate complex pair
+        const half_q = -q / 2;
+        const inner = q * q / 4 + p * p * p / 27;
+        const sqrt_inner = @sqrt(@max(inner, 0));
+        const u = std.math.cbrt(half_q + sqrt_inner);
+        const v = std.math.cbrt(half_q - sqrt_inner);
+        const real_root = snapRoot(u + v + shift);
+        solutions.append(allocator, try makeNumber(allocator, real_root)) catch return SimplifyError.OutOfMemory;
+        if (disc < 0) {
+            const re = snapRoot(-(u + v) / 2 + shift);
+            const im = snapRoot(@abs(u - v) * @sqrt(3.0) / 2);
+            solutions.append(allocator, try makeComplex(allocator, re, im)) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeComplex(allocator, re, -im)) catch return SimplifyError.OutOfMemory;
+        } else {
+            // disc == 0: repeated real root
+            const rep = snapRoot(-(u + v) / 2 + shift);
+            solutions.append(allocator, try makeNumber(allocator, rep)) catch return SimplifyError.OutOfMemory;
+            solutions.append(allocator, try makeNumber(allocator, rep)) catch return SimplifyError.OutOfMemory;
+        }
+    }
+
+    const result = allocator.create(Expr) catch return SimplifyError.OutOfMemory;
+    result.* = .{ .list = solutions };
+    return result;
+}
+
+/// Snaps float noise on computed roots to nearby integers/half-integers.
+fn snapRoot(x: f64) f64 {
+    const rounded = @round(x * 2) / 2;
+    if (@abs(x - rounded) < 1e-9) {
+        // Avoid -0.0
+        if (rounded == 0) return 0;
+        return rounded;
+    }
     return x;
 }
 
@@ -2875,7 +3111,7 @@ fn analyzeTermForVar(term: *const Expr, var_name: []const u8, allocator: std.mem
 /// Checks if an expression contains the variable
 fn containsVar(expr: *const Expr, var_name: []const u8) bool {
     switch (expr.*) {
-        .number => return false,
+        .number, .string => return false,
         .symbol, .owned_symbol => |s| return std.mem.eql(u8, s, var_name),
         .lambda => return false,
         .list => |lst| {
@@ -3483,6 +3719,9 @@ fn matchPatternInner(pattern: *const Expr, expr: *const Expr, bindings: *std.Str
         .number => |n| {
             return expr.* == .number and expr.number == n;
         },
+        .string => |s| {
+            return expr.* == .string and std.mem.eql(u8, s, expr.string);
+        },
         .symbol, .owned_symbol => |s| {
             // Check if it's a pattern variable
             if (isPatternVar(s)) {
@@ -3530,7 +3769,7 @@ fn matchPatternInner(pattern: *const Expr, expr: *const Expr, bindings: *std.Str
 /// Returns a new expression with pattern variables substituted.
 pub fn applyBindings(replacement: *const Expr, bindings: *std.StringHashMap(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (replacement.*) {
-        .number => return try copyExpr(replacement, allocator),
+        .number, .string => return try copyExpr(replacement, allocator),
         .symbol, .owned_symbol => |s| {
             if (isPatternVar(s)) {
                 if (bindings.get(s)) |bound_expr| {
