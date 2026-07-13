@@ -134,6 +134,10 @@ const Server = struct {
             return try self.handleDefinition(id, params);
         } else if (std.mem.eql(u8, method_str, "textDocument/documentSymbol")) {
             return try self.handleDocumentSymbol(id, params);
+        } else if (std.mem.eql(u8, method_str, "textDocument/rename")) {
+            return try self.handleRename(id, params);
+        } else if (std.mem.eql(u8, method_str, "textDocument/signatureHelp")) {
+            return try self.handleSignatureHelp(id, params);
         }
 
         return null;
@@ -149,6 +153,10 @@ const Server = struct {
             \\    "documentFormattingProvider": true,
             \\    "definitionProvider": true,
             \\    "documentSymbolProvider": true,
+            \\    "renameProvider": true,
+            \\    "signatureHelpProvider": {{
+            \\      "triggerCharacters": [" "]
+            \\    }},
             \\    "completionProvider": {{
             \\      "triggerCharacters": ["("]
             \\    }}
@@ -297,6 +305,120 @@ const Server = struct {
         }
         try buf.appendSlice(self.allocator, "]");
         return try self.makeResponse(id, buf.items);
+    }
+
+    /// textDocument/rename: renames every whole-word occurrence of the
+    /// symbol under the cursor within this document.
+    fn handleRename(self: *Server, id: ?std.json.Value, params: ?std.json.Value) ![]const u8 {
+        const p = params orelse return try self.makeResponse(id, "null");
+        const text_doc = p.object.get("textDocument") orelse return try self.makeResponse(id, "null");
+        const uri = text_doc.object.get("uri") orelse return try self.makeResponse(id, "null");
+        const position = p.object.get("position") orelse return try self.makeResponse(id, "null");
+        const new_name_val = p.object.get("newName") orelse return try self.makeResponse(id, "null");
+        const new_name = new_name_val.string;
+        const doc = self.documents.get(uri.string) orelse return try self.makeResponse(id, "null");
+
+        const line_num: usize = @intCast(position.object.get("line").?.integer);
+        const char_num: usize = @intCast(position.object.get("character").?.integer);
+        const word = self.getWordAtPosition(doc.content, line_num, char_num);
+        if (word.len == 0) return try self.makeResponse(id, "null");
+
+        var edits: std.ArrayList(u8) = .empty;
+        defer edits.deinit(self.allocator);
+        try edits.appendSlice(self.allocator, "[");
+        var first = true;
+
+        var ln: usize = 0;
+        var lines_it = std.mem.splitScalar(u8, doc.content, '\n');
+        while (lines_it.next()) |line| : (ln += 1) {
+            var search: usize = 0;
+            while (std.mem.indexOfPos(u8, line, search, word)) |at| {
+                search = at + word.len;
+                // Whole-word match only
+                const before_ok = at == 0 or !isWordChar(line[at - 1]);
+                const after_ok = at + word.len >= line.len or !isWordChar(line[at + word.len]);
+                if (!before_ok or !after_ok) continue;
+                if (!first) try edits.appendSlice(self.allocator, ",");
+                first = false;
+                var buf: [512]u8 = undefined;
+                var esc_buf: [256]u8 = undefined;
+                const escaped_new = escapeJson(new_name, &esc_buf);
+                const item = std.fmt.bufPrint(&buf,
+                    \\{{"range": {{"start": {{"line": {d}, "character": {d}}}, "end": {{"line": {d}, "character": {d}}}}}, "newText": "{s}"}}
+                , .{ ln, at, ln, at + word.len, escaped_new }) catch continue;
+                try edits.appendSlice(self.allocator, item);
+            }
+        }
+        try edits.appendSlice(self.allocator, "]");
+
+        var result: std.ArrayList(u8) = .empty;
+        defer result.deinit(self.allocator);
+        var uri_buf: [512]u8 = undefined;
+        const escaped_uri = escapeJson(uri.string, &uri_buf);
+        try result.appendSlice(self.allocator, "{\"changes\": {\"");
+        try result.appendSlice(self.allocator, escaped_uri);
+        try result.appendSlice(self.allocator, "\": ");
+        try result.appendSlice(self.allocator, edits.items);
+        try result.appendSlice(self.allocator, "}}");
+        return try self.makeResponse(id, result.items);
+    }
+
+    /// textDocument/signatureHelp: shows the signature of the innermost
+    /// enclosing call while typing arguments.
+    fn handleSignatureHelp(self: *Server, id: ?std.json.Value, params: ?std.json.Value) ![]const u8 {
+        const p = params orelse return try self.makeResponse(id, "null");
+        const text_doc = p.object.get("textDocument") orelse return try self.makeResponse(id, "null");
+        const uri = text_doc.object.get("uri") orelse return try self.makeResponse(id, "null");
+        const position = p.object.get("position") orelse return try self.makeResponse(id, "null");
+        const doc = self.documents.get(uri.string) orelse return try self.makeResponse(id, "null");
+
+        const line_num: usize = @intCast(position.object.get("line").?.integer);
+        const char_num: usize = @intCast(position.object.get("character").?.integer);
+
+        // Find the byte offset of the cursor
+        var offset: usize = 0;
+        var ln: usize = 0;
+        var lines_it = std.mem.splitScalar(u8, doc.content, '\n');
+        while (lines_it.next()) |line| : (ln += 1) {
+            if (ln == line_num) {
+                offset += @min(char_num, line.len);
+                break;
+            }
+            offset += line.len + 1;
+        }
+
+        // Scan backwards for the innermost unclosed '(' and take the head word
+        var depth: i32 = 0;
+        var i = offset;
+        var head: []const u8 = "";
+        while (i > 0) {
+            i -= 1;
+            const c = doc.content[i];
+            if (c == ')') depth += 1;
+            if (c == '(') {
+                if (depth == 0) {
+                    var j = i + 1;
+                    const start = j;
+                    while (j < doc.content.len and isWordChar(doc.content[j])) j += 1;
+                    head = doc.content[start..j];
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+        if (head.len == 0) return try self.makeResponse(id, "null");
+
+        const sig = builtin_docs.getSignature(head) orelse return try self.makeResponse(id, "null");
+        const doc_md = builtin_docs.getDocumentation(head) orelse "";
+        var sig_buf: [256]u8 = undefined;
+        var doc_buf: [2048]u8 = undefined;
+        const escaped_sig = escapeJson(sig, &sig_buf);
+        const escaped_doc = escapeJson(doc_md, &doc_buf);
+        var buf: [4096]u8 = undefined;
+        const result = std.fmt.bufPrint(&buf,
+            \\{{"signatures": [{{"label": "{s}", "documentation": {{"kind": "markdown", "value": "{s}"}}}}], "activeSignature": 0, "activeParameter": 0}}
+        , .{ escaped_sig, escaped_doc }) catch return try self.makeResponse(id, "null");
+        return try self.makeResponse(id, result);
     }
 
     /// Whole-document formatting via the canonical Lispium formatter.
