@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lispium 0.8.0 - Function Reference</title>
+<title>Lispium 0.9.0 - Function Reference</title>
 <style>
   :root { --bg: #16161d; --fg: #dcd7ba; --dim: #727169; --accent: #7e9cd8; --card: #1f1f28; --code: #2a2a37; }
   * { box-sizing: border-box; }
@@ -26,7 +26,7 @@
 <body>
 <header>
 <h1><a href="https://github.com/Tetraslam/lispium">Lispium</a> Function Reference</h1>
-<div class="sub">v0.8.0 &middot; every builtin and special form &middot;
+<div class="sub">v0.9.0 &middot; every builtin and special form &middot;
 <a href="playground/">try it in the playground</a> &middot;
 <a href="https://github.com/Tetraslam/lispium">GitHub</a></div>
 </header>
@@ -34,6 +34,7 @@
 <input id="search" type="search" placeholder="Filter: diff, matrix, rational, macro..." autofocus>
 <div class="count"><span id="shown">0</span> entries</div>
 <div id="entries">
+<div class="entry" data-name="step"><div class="sig">(step expr)</div><div class="summary">Evaluates expr while printing every reduction with its result (capped at 200 steps).</div><div class="example">(step (fact 3))</div></div>
 <div class="entry" data-name="begin"><div class="sig">(begin e1 e2 ...)</div><div class="summary">Evaluates expressions in order, returning the last.</div><div class="example">(begin (print 1) (+ 2 3)) =&gt; 5</div></div>
 <div class="entry" data-name="cond"><div class="sig">(cond (test result...) ... (else result...))</div><div class="summary">Multi-branch conditional; else always matches.</div><div class="example">(cond ((&lt; x 0) &quot;neg&quot;) (else &quot;non-neg&quot;))</div></div>
 <div class="entry" data-name="quote"><div class="sig">(quote expr) or 'expr</div><div class="summary">Returns expr unevaluated (data, not code).</div><div class="example">'(+ 1 2) =&gt; (+ 1 2)</div></div>

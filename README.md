@@ -191,8 +191,10 @@ Editors format through the LSP (`:format` in Helix, format-on-save in VS Code).
 
 ## Tooling
 
-- `lispium repl [file]` — REPL with persistent history, `_`, `?func` docs
-- `lispium run --watch --time` — scripts with live reload and timing
+- `lispium repl [file]` — REPL with a real line editor (arrows, history,
+  cursor editing), persistent history, `_`, `?func` docs
+- `lispium run --watch --time --profile` — live reload, timing, and
+  per-statement profiling
 - `lispium test` — assert-based test runner for `*_test.lspm`
 - `lispium docs [name|--html]` — reference in the terminal or as a site
 - `lispium fmt` / `lispium completions <shell>` / `man man/lispium.1`
@@ -200,6 +202,8 @@ Editors format through the LSP (`:format` in Helix, format-on-save in VS Code).
   go-to-definition, outline — used by the VS Code extension and Helix
 - Jupyter: `pip install lispium[jupyter]`, then `python -m lispium.kernel install`
 - Errors show call stacks: `call stack: inner <- middle <- outer`
+- `(step expr)` prints every reduction; `(trace f)` traces one function
+- LSP also does rename and signature help
 
 ## Tests
 

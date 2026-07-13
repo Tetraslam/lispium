@@ -28,9 +28,9 @@ SENTINEL_EXPR = '(concat "--lispium-" "cell-done--")'
 
 class LispiumKernel(Kernel):
     implementation = "lispium"
-    implementation_version = "0.8.0"
+    implementation_version = "0.9.0"
     language = "lispium"
-    language_version = "0.8.0"
+    language_version = "0.9.0"
     language_info = {
         "name": "lispium",
         "mimetype": "text/x-lispium",

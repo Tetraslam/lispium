@@ -1022,12 +1022,13 @@ Parameters bind to **unevaluated** argument expressions; the template
 (defmacro (unless c a b) `(if ,c ,b ,a))
 ```
 
-### try / time / trace
+### try / time / trace / step
 
 ```lisp
 (try expr fallback)            ; error recovery
 (time expr)                    ; prints wall-clock time
 (trace fn-name)                ; toggles call tracing for a user function
+(step expr)                    ; prints every reduction with its result
 ```
 
 ### Tail calls

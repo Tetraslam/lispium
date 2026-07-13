@@ -2,7 +2,7 @@
   "name": "lispium",
   "displayName": "Lispium",
   "description": "Language support for Lispium - A Symbolic Computer Algebra System",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "tetraslam",
   "repository": {
     "type": "git",
@@ -88,6 +88,10 @@
       {
         "command": "lispium.runFile",
         "title": "Lispium: Run Current File"
+      },
+      {
+        "command": "lispium.evalForm",
+        "title": "Lispium: Evaluate Form"
       }
     ],
     "menus": {

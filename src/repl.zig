@@ -7,6 +7,7 @@ const eval = @import("evaluator.zig").eval;
 const Env = @import("environment.zig").Env;
 const builtins = @import("builtins.zig");
 const registry = @import("registry.zig");
+const lineedit = @import("lineedit.zig");
 const docs_table = @import("docs.zig");
 
 const version = build_options.version;
@@ -216,6 +217,11 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
     env.in = stdin;
     env.io = io;
 
+    // Interactive terminals get the raw-mode line editor (arrow keys,
+    // history, cursor editing); piped input uses plain line reading
+    const use_editor = lineedit.supported and
+        (std.Io.File.stdin().isTty(io) catch false);
+
     // Multi-line expression buffer
     var expr_buf: std.ArrayList(u8) = .empty;
     defer expr_buf.deinit(allocator);
@@ -249,23 +255,44 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
     try stdout.print("Type 'help' for commands, '?func' for function help, 'quit' to exit.\n\n", .{});
 
     while (true) {
-        // Show different prompt for continuation lines
-        if (expr_buf.items.len == 0) {
-            try stdout.print("lispium> ", .{});
-        } else {
-            try stdout.print("      .. ", .{});
-        }
+        const prompt: []const u8 = if (expr_buf.items.len == 0) "lispium> " else "      .. ";
 
-        const maybe_line = stdin.takeDelimiter('\n') catch |err| {
-            if (err == error.StreamTooLong) {
-                try stdout.print("Error: input line too long\n", .{});
+        var edited_line: ?[]u8 = null;
+        defer if (edited_line) |l| allocator.free(l);
+
+        const raw_line: []const u8 = if (use_editor) blk: {
+            const res = lineedit.readLine(allocator, io, stdout, prompt, session_inputs.items) catch {
+                try stdout.print("\nGoodbye!\n", .{});
                 break;
+            };
+            switch (res) {
+                .line => |l| {
+                    edited_line = l;
+                    break :blk l;
+                },
+                .eof => {
+                    try stdout.print("Goodbye!\n", .{});
+                    break;
+                },
+                .cancelled => {
+                    expr_buf.clearRetainingCapacity();
+                    continue;
+                },
             }
-            return err;
-        };
-        const raw_line = maybe_line orelse {
-            try stdout.print("\nGoodbye!\n", .{});
-            break;
+        } else blk: {
+            try stdout.print("{s}", .{prompt});
+            try stdout.flush();
+            const maybe_line = stdin.takeDelimiter('\n') catch |err| {
+                if (err == error.StreamTooLong) {
+                    try stdout.print("Error: input line too long\n", .{});
+                    break;
+                }
+                return err;
+            };
+            break :blk maybe_line orelse {
+                try stdout.print("\nGoodbye!\n", .{});
+                break;
+            };
         };
 
         // Trim whitespace from this line

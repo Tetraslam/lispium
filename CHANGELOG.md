@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0] - 2026-07-11
+
+The polish release.
+
+### Added
+- **Native REPL line editor** (POSIX terminals): arrow-key history and
+  cursor movement, Home/End, Ctrl+A/E/K/U/W/L, Ctrl+C cancels the line,
+  Ctrl+D exits; piped input and Windows fall back to plain reading.
+- **Step evaluator**: `(step expr)` prints every reduction with its
+  result, indented by depth (capped at 200 steps).
+- **Profiling**: `lispium run --profile` prints a per-statement cost
+  table (sorted, with percentages and line numbers).
+- **LSP**: rename (whole-word, per-document) and signature help while
+  typing arguments.
+- **VS Code**: CodeLens "eval" above every top-level form, showing the
+  result inline.
+
 ## [0.8.0] - 2026-07-11
 
 The tooling release.

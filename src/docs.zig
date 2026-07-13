@@ -11,6 +11,7 @@ pub const Doc = struct {
 };
 
 pub const docs = [_]Doc{
+    .{ .name = "step", .signature = "(step expr)", .summary = "Evaluates expr while printing every reduction with its result (capped at 200 steps)", .example = "(step (fact 3))" },
     .{ .name = "begin", .signature = "(begin e1 e2 ...)", .summary = "Evaluates expressions in order, returning the last", .example = "(begin (print 1) (+ 2 3)) => 5" },
     .{ .name = "cond", .signature = "(cond (test result...) ... (else result...))", .summary = "Multi-branch conditional; else always matches", .example = "(cond ((< x 0) \"neg\") (else \"non-neg\"))" },
     .{ .name = "quote", .signature = "(quote expr) or 'expr", .summary = "Returns expr unevaluated (data, not code)", .example = "'(+ 1 2) => (+ 1 2)" },

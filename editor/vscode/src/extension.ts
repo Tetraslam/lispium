@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
-import { workspace, ExtensionContext, window, commands } from 'vscode';
+import { workspace, ExtensionContext, window, commands, languages, CodeLens, Range, Position, TextDocument } from 'vscode';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -113,6 +113,47 @@ export function activate(context: ExtensionContext) {
             outputChannel.appendLine('Restarting language server...');
             await client.restart();
             outputChannel.appendLine('Language server restarted');
+        })
+    );
+
+    // CodeLens: an "evaluate" action above each top-level form
+    context.subscriptions.push(
+        languages.registerCodeLensProvider({ language: 'lispium' }, {
+            provideCodeLenses(document: TextDocument): CodeLens[] {
+                const lenses: CodeLens[] = [];
+                const text = document.getText();
+                // Find top-level forms: '(' at column 0 through its match
+                let depth = 0, start = -1, startLine = 0, line = 0;
+                for (let i = 0; i < text.length; i++) {
+                    const c = text[i];
+                    if (c === '\n') { line++; continue; }
+                    if (c === ';') { while (i < text.length && text[i] !== '\n') i++; line++; continue; }
+                    if (c === '(') { if (depth === 0) { start = i; startLine = line; } depth++; }
+                    if (c === ')') {
+                        depth--;
+                        if (depth === 0 && start >= 0) {
+                            const form = text.slice(start, i + 1);
+                            lenses.push(new CodeLens(
+                                new Range(new Position(startLine, 0), new Position(startLine, 0)),
+                                { title: '$(play) eval', command: 'lispium.evalForm', arguments: [form] }
+                            ));
+                            start = -1;
+                        }
+                    }
+                }
+                return lenses;
+            }
+        })
+    );
+
+    // Evaluate one form and show the result inline
+    context.subscriptions.push(
+        commands.registerCommand('lispium.evalForm', (form: string) => {
+            execFile(serverPath, ['eval', form], { timeout: 15000 }, (err, stdout, stderr) => {
+                const result = (stdout || stderr || (err ? err.message : '')).trim();
+                const preview = form.length > 40 ? form.slice(0, 37) + '...' : form;
+                window.showInformationMessage(`${preview}  =>  ${result.split('\n').pop()}`);
+            });
         })
     );
 
