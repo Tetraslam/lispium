@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.11.0] - 2026-07-13
+
+The pinpoint release.
+
+### Added
+- **Source positions in errors**: run mode reports `file:line:col` of the
+  innermost failing subexpression (parse and eval errors), `lispium eval`
+  reports `at line:col`, and the REPL echoes the input with a caret under
+  the failing token. Inside user functions, errors point at the call site
+  and keep the call-stack trace.
+- Statement buffers preserve the original file layout, so positions in
+  multi-line expressions map back to the real line and column.
+
+### Fixed
+- An unclosed statement at end of file is now a parse error instead of
+  being silently dropped.
+- Several statements on one line (or one `lispium eval` string) all
+  evaluate; previously everything after the first was silently ignored.
+- A stray `)` after a complete expression is now reported.
+
+### Changed
+- Shorter README; repo description and CI badge added.
+
 ## [0.10.0] - 2026-07-13
 
 The bignum release.
