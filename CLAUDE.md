@@ -1208,8 +1208,8 @@ The workflow for every feature, start to finish:
 8. **Add a feature test file** in `src/tests/`, register in `src/tests.zig`, rerun. `testing.allocator` catches leaks for free.
 9. **Update docs**: docs.zig summaries, CLAUDE.md reference section, any caps/limits that changed.
 10. **`zig fmt` touched files, then commit.**
-11. **Release**: bump one minor version (`./scripts/bump-version.sh 0.X.0`), update CHANGELOG.md, commit, `git tag v0.X.0`, `git push origin main --tags`. This triggers release.yml (GitHub Release binaries) and pypi.yml (PyPI).
-12. **After release assets exist**: update package manifest checksums (Formula/lispium.rb, winget installer.yaml, aur/PKGBUILD + .SRCINFO), commit + push. Publish the VS Code extension (`npx vsce publish` in editor/vscode).
+11. **Release**: bump one minor version (`./scripts/bump-version.sh 0.X.0`), update CHANGELOG.md, commit, tag with `git tag -m "v0.X.0" v0.X.0` (tag.gpgsign is on; a bare `git tag` opens an editor and hangs), `git push origin main --tags`. release.yml builds the GitHub Release binaries with SHA256SUMS.txt, triggers pypi.yml, and publishes the VS Code extension to Open VSX and the Marketplace.
+12. **After the release run completes**: update package manifest checksums from SHA256SUMS.txt (Formula/lispium.rb, winget installer.yaml, aur/PKGBUILD + .SRCINFO), commit + push.
 13. **Update the local install**: `uv tool upgrade lispium` (once PyPI publish completes).
 
 ---
