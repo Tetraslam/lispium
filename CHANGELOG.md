@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.0] - 2026-07-13
+
+The bignum release.
+
+### Added
+- **Arbitrary-precision integers**: integer literals and results outside
+  the f64-exact range become exact big integers (backed by
+  `std.math.big.int`), demoting back to plain numbers when they fit.
+  Exact `+ - * ^ mod gcd abs sign`, exact `= < >` comparisons, and `/`
+  when each divisor divides evenly (float otherwise).
+- **Exact factorials past 20!**: `(factorial 25)` returns
+  15511210043330985984000000 instead of an error above 170 (new cap:
+  100000).
+- **Exact integer powers**: `(^ 2 100)` returns the full 31-digit value
+  (integer base, integer exponent up to 1e6).
+- Bigs flow through variables, lambdas, `evalf`, LaTeX export, and all
+  printers; mixing with floats produces floats.
+
 ## [0.9.0] - 2026-07-11
 
 The polish release.
