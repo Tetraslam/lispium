@@ -97,11 +97,62 @@ pub fn takeErrorContext() []const u8 {
     return error_context_buf[0..n];
 }
 
+// ============================================================================
+// Source positions: when a PosMap from the parser is installed, eval tracks
+// which source subexpression it is inside via a token stack that unwinds on
+// success but is left in place on error, so the top-of-stack token is the
+// innermost failing subexpression. Same pattern as the call stack above.
+// ============================================================================
+
+pub const PosMap = @import("parser.zig").PosMap;
+
+const POS_STACK_MAX = 64;
+threadlocal var position_map: ?*const PosMap = null;
+threadlocal var pos_stack: [POS_STACK_MAX][]const u8 = undefined;
+threadlocal var pos_stack_len: usize = 0;
+
+/// Installs (or clears, with null) the node-to-token map for the statement
+/// about to be evaluated. Resets the position stack.
+pub fn setPositionMap(map: ?*const PosMap) void {
+    position_map = map;
+    pos_stack_len = 0;
+}
+
+/// The source token of the innermost failing subexpression, or null when
+/// no position is known. Clears the stack.
+pub fn takeErrorPosition() ?[]const u8 {
+    if (pos_stack_len == 0) return null;
+    const tok = pos_stack[pos_stack_len - 1];
+    pos_stack_len = 0;
+    return tok;
+}
+
 pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
     eval_depth += 1;
     defer eval_depth -= 1;
     if (eval_depth > max_eval_depth) return Error.RecursionLimit;
 
+    // Track which source subexpression we're in (parse-tree nodes only).
+    // The saved length (not a decrement) heals any stale entries left by
+    // builtins that catch and discard inner eval errors.
+    const saved_pos_len = pos_stack_len;
+    var tracked = false;
+    if (position_map) |map| {
+        if (map.get(expr)) |tok| {
+            if (pos_stack_len < POS_STACK_MAX) {
+                pos_stack[pos_stack_len] = tok;
+                pos_stack_len += 1;
+                tracked = true;
+            }
+        }
+    }
+
+    const result = try evalTop(expr, env);
+    if (tracked) pos_stack_len = saved_pos_len;
+    return result;
+}
+
+fn evalTop(expr: *Expr, env: *Env) Error!*Expr {
     // Step mode: show each list reduction with its result
     if (step_mode and expr.* == .list and expr.list.items.len > 0) {
         // Don't step into the step form itself
@@ -227,12 +278,14 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                 if (std.mem.eql(u8, op_expr.symbol, "try")) {
                     if (expr.list.items.len != 3) return Error.InvalidSyntax;
                     const saved_depth = call_stack_len;
+                    const saved_pos = pos_stack_len;
                     const attempted = eval(expr.list.items[1], env) catch |err| switch (err) {
                         error.OutOfMemory => return err,
                         else => {
                             // Recovered: discard the failed branch's frames
                             call_stack_len = saved_depth;
                             call_stack_truncated = false;
+                            pos_stack_len = saved_pos;
                             _ = takeErrorContextPeek();
                             return try eval(expr.list.items[2], env);
                         },
@@ -1398,9 +1451,9 @@ fn bindParam(old_values: *std.ArrayList(SavedBinding), env: *Env, name: []const 
 fn isSpecialFormHead(head: *const Expr) bool {
     if (head.* != .symbol) return false;
     const names = [_][]const u8{
-        "lambda", "define", "defmacro", "if", "let", "letrec", "matrix", "sum",
-        "product", "solve",     "dsolve", "quote", "quasiquote", "unquote",
-        "begin",  "cond",       "and",   "or",    "try",   "step",
+        "lambda",  "define", "defmacro", "if",    "let",        "letrec",  "matrix", "sum",
+        "product", "solve",  "dsolve",   "quote", "quasiquote", "unquote", "begin",  "cond",
+        "and",     "or",     "try",      "step",
     };
     for (names) |n| {
         if (std.mem.eql(u8, head.symbol, n)) return true;

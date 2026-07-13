@@ -75,10 +75,19 @@ pub const Expr = union(enum) {
     }
 };
 
+/// Maps parse-tree nodes to the source token that starts them ('(' for
+/// lists). Tokens are slices into the tokenized source, so byte offsets
+/// (and from them line/column) can be recovered with `tokenLineCol`.
+pub const PosMap = std.AutoHashMap(*const Expr, []const u8);
+
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokens: std.ArrayList([]const u8),
     position: usize = 0,
+    /// When set, every created node is recorded here (best effort)
+    positions: ?*PosMap = null,
+    /// The innermost token at which parsing failed (null for plain EOF)
+    error_token: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, tokens: std.ArrayList([]const u8)) Parser {
         return Parser{
@@ -107,6 +116,18 @@ pub const Parser = struct {
     fn parseExprDepth(self: *Parser, depth: usize) (Error || std.mem.Allocator.Error)!*Expr {
         if (depth > MAX_PARSE_DEPTH) return Error.RecursionLimit;
         const token = self.next() orelse return Error.UnexpectedEOF;
+        const result = self.parseTokenDepth(token, depth) catch |err| {
+            // Remember the innermost failing token (first setter wins)
+            if (self.error_token == null) self.error_token = token;
+            return err;
+        };
+        if (self.positions) |map| {
+            map.put(result, token) catch {};
+        }
+        return result;
+    }
+
+    fn parseTokenDepth(self: *Parser, token: []const u8, depth: usize) (Error || std.mem.Allocator.Error)!*Expr {
         if (std.mem.eql(u8, token, "(")) {
             var list: std.ArrayList(*Expr) = .empty;
             errdefer {
@@ -230,6 +251,29 @@ pub const Parser = struct {
         }
     }
 };
+
+pub const LineCol = struct { line: usize, col: usize };
+
+/// 1-based line/column of `token` within `source`. Only works when the
+/// token is a slice into `source` (as produced by the tokenizer); returns
+/// null otherwise.
+pub fn tokenLineCol(source: []const u8, token: []const u8) ?LineCol {
+    const src_start = @intFromPtr(source.ptr);
+    const tok_start = @intFromPtr(token.ptr);
+    if (tok_start < src_start or tok_start + token.len > src_start + source.len) return null;
+    const offset = tok_start - src_start;
+    var line: usize = 1;
+    var col: usize = 1;
+    for (source[0..offset]) |c| {
+        if (c == '\n') {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .line = line, .col = col };
+}
 
 /// Heuristic: does the token stream look like infix math (e.g. "1 + 2",
 /// "2+3", or "sin(x)") rather than prefix S-expressions? Used by the CLI

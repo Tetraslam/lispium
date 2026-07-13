@@ -1,9 +1,11 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
-const Parser = @import("parser.zig").Parser;
-const Expr = @import("parser.zig").Expr;
-const eval = @import("evaluator.zig").eval;
+const parser_mod = @import("parser.zig");
+const Parser = parser_mod.Parser;
+const Expr = parser_mod.Expr;
+const evaluator = @import("evaluator.zig");
+const eval = evaluator.eval;
 const Env = @import("environment.zig").Env;
 const builtins = @import("builtins.zig");
 const registry = @import("registry.zig");
@@ -105,6 +107,21 @@ fn appendHistory(io: std.Io, path: []const u8, line: []const u8) void {
     _ = file.writePositional(io, &.{"\n"}, offset) catch return;
 }
 
+/// Echoes the input with a caret under the failing token (skipped for
+/// very long inputs, where a caret line stops being helpful).
+fn printCaret(stdout: anytype, input: []const u8, token: ?[]const u8) !void {
+    const tok = token orelse return;
+    if (input.len > 200) return;
+    const lc = parser_mod.tokenLineCol(input, tok) orelse return;
+    if (lc.line != 1) return; // REPL inputs are joined to a single line
+    try stdout.print("  {s}\n  ", .{input});
+    var i: usize = 1;
+    while (i < lc.col) : (i += 1) {
+        try stdout.print(" ", .{});
+    }
+    try stdout.print("^\n", .{});
+}
+
 fn countParens(input: []const u8) i32 {
     var depth: i32 = 0;
     var in_string = false;
@@ -176,6 +193,12 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
 
     var env = Env.init(allocator);
     defer env.deinit();
+
+    // Node-to-token positions for the current input, so errors can point
+    // a caret at the failing subexpression
+    var positions = parser_mod.PosMap.init(allocator);
+    defer positions.deinit();
+    defer evaluator.setPositionMap(null);
 
     // Initialize builtins (shared registry: single source of truth)
     try registry.installBuiltins(&env);
@@ -254,7 +277,7 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
     try stdout.print("Lispium {s} - Symbolic Computer Algebra System\n", .{version});
     try stdout.print("Type 'help' for commands, '?func' for function help, 'quit' to exit.\n\n", .{});
 
-    while (true) {
+    repl_loop: while (true) {
         const prompt: []const u8 = if (expr_buf.items.len == 0) "lispium> " else "      .. ";
 
         var edited_line: ?[]u8 = null;
@@ -457,89 +480,98 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
             try stdout.print("hint: Lispium uses prefix notation, e.g. (+ 1 2) or (sin x)\n", .{});
         }
 
+        // Parse and evaluate every expression on the line (a single input
+        // can hold several statements)
+        positions.clearRetainingCapacity();
         var parser = Parser.init(allocator, tokens);
-        const expr = parser.parseExpr() catch |err| {
-            const err_msg = switch (err) {
-                error.UnexpectedToken => "unexpected token in expression",
-                error.UnexpectedEOF => "unexpected end of input (missing closing paren?)",
-                error.RecursionLimit => "expression too deeply nested",
-                error.UnterminatedString => "unterminated string literal",
-                error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
-                error.OutOfMemory => "out of memory",
-            };
-            try stdout.print("Error: {s}\n", .{err_msg});
-            expr_buf.clearRetainingCapacity();
-            continue;
-        };
-        defer {
-            expr.deinit(allocator);
-            allocator.destroy(expr);
-        }
-
-        const result = eval(expr, &env) catch |err| {
-            const err_msg = switch (err) {
-                error.UnsupportedOperator => "unsupported operator",
-                error.InvalidArgument => "invalid argument(s)",
-                error.KeyNotFound => "unknown function or variable",
-                error.OutOfMemory => "out of memory",
-                error.RecursionLimit => "recursion or iteration limit exceeded",
-                error.InvalidLambda => "invalid lambda expression",
-                error.InvalidDefine => "invalid define expression",
-                error.InvalidSyntax => "malformed special form (wrong shape or argument count)",
-                error.WrongNumberOfArguments => "wrong number of arguments",
-                error.EvaluationError => "evaluation error",
-                error.Undefined => "result is mathematically undefined at this point",
-            };
-            const ctx = @import("evaluator.zig").takeErrorContext();
-            if (ctx.len > 0) {
-                try stdout.print("Error: {s} (in '{s}')\n", .{ err_msg, ctx });
-            } else {
+        parser.positions = &positions;
+        while (parser.position < tokens.items.len) {
+            const expr = parser.parseExpr() catch |err| {
+                const err_msg = switch (err) {
+                    error.UnexpectedToken => "unexpected token in expression",
+                    error.UnexpectedEOF => "unexpected end of input (missing closing paren?)",
+                    error.RecursionLimit => "expression too deeply nested",
+                    error.UnterminatedString => "unterminated string literal",
+                    error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
+                    error.OutOfMemory => "out of memory",
+                };
                 try stdout.print("Error: {s}\n", .{err_msg});
-            }
-            const frames = @import("evaluator.zig").takeCallStack();
-            if (frames.len > 0) {
-                try stdout.print("  call stack:", .{});
-                var fi = frames.len;
-                while (fi > 0) {
-                    fi -= 1;
-                    try stdout.print(" {s}", .{frames[fi]});
-                    if (fi > 0) try stdout.print(" <-", .{});
-                }
-                try stdout.print("\n", .{});
-            }
-            expr_buf.clearRetainingCapacity();
-            continue;
-        };
-        defer {
-            result.deinit(allocator);
-            allocator.destroy(result);
-        }
-
-        // Validate and print the result
-        validateExpr(result) catch |err| {
-            try stdout.print("Internal error: {}\n", .{err});
-            expr_buf.clearRetainingCapacity();
-            continue;
-        };
-
-        printExpr(result, stdout) catch |err| {
-            try stdout.print("Display error: {}\n", .{err});
-            expr_buf.clearRetainingCapacity();
-            continue;
-        };
-        try stdout.print("\n", .{});
-
-        // Bind _ to the last result for quick reuse
-        if (@import("symbolic.zig").copyExpr(result, allocator)) |last| {
-            if (env.get("_")) |old_val| {
-                old_val.deinit(allocator);
-                allocator.destroy(old_val);
-            } else |_| {}
-            env.put("_", last) catch {
-                last.deinit(allocator);
-                allocator.destroy(last);
+                try printCaret(stdout, input, parser.error_token);
+                expr_buf.clearRetainingCapacity();
+                continue :repl_loop;
             };
-        } else |_| {}
+            defer {
+                expr.deinit(allocator);
+                allocator.destroy(expr);
+            }
+
+            evaluator.setPositionMap(&positions);
+            const result = eval(expr, &env) catch |err| {
+                const err_msg = switch (err) {
+                    error.UnsupportedOperator => "unsupported operator",
+                    error.InvalidArgument => "invalid argument(s)",
+                    error.KeyNotFound => "unknown function or variable",
+                    error.OutOfMemory => "out of memory",
+                    error.RecursionLimit => "recursion or iteration limit exceeded",
+                    error.InvalidLambda => "invalid lambda expression",
+                    error.InvalidDefine => "invalid define expression",
+                    error.InvalidSyntax => "malformed special form (wrong shape or argument count)",
+                    error.WrongNumberOfArguments => "wrong number of arguments",
+                    error.EvaluationError => "evaluation error",
+                    error.Undefined => "result is mathematically undefined at this point",
+                };
+                const ctx = evaluator.takeErrorContext();
+                if (ctx.len > 0) {
+                    try stdout.print("Error: {s} (in '{s}')\n", .{ err_msg, ctx });
+                } else {
+                    try stdout.print("Error: {s}\n", .{err_msg});
+                }
+                try printCaret(stdout, input, evaluator.takeErrorPosition());
+                const frames = evaluator.takeCallStack();
+                if (frames.len > 0) {
+                    try stdout.print("  call stack:", .{});
+                    var fi = frames.len;
+                    while (fi > 0) {
+                        fi -= 1;
+                        try stdout.print(" {s}", .{frames[fi]});
+                        if (fi > 0) try stdout.print(" <-", .{});
+                    }
+                    try stdout.print("\n", .{});
+                }
+                expr_buf.clearRetainingCapacity();
+                continue :repl_loop;
+            };
+            defer {
+                result.deinit(allocator);
+                allocator.destroy(result);
+            }
+
+            // Validate and print the result
+            validateExpr(result) catch |err| {
+                try stdout.print("Internal error: {}\n", .{err});
+                expr_buf.clearRetainingCapacity();
+                continue :repl_loop;
+            };
+
+            printExpr(result, stdout) catch |err| {
+                try stdout.print("Display error: {}\n", .{err});
+                expr_buf.clearRetainingCapacity();
+                continue :repl_loop;
+            };
+            try stdout.print("\n", .{});
+
+            // Bind _ to the last result for quick reuse
+            if (@import("symbolic.zig").copyExpr(result, allocator)) |last| {
+                if (env.get("_")) |old_val| {
+                    old_val.deinit(allocator);
+                    allocator.destroy(old_val);
+                } else |_| {}
+                env.put("_", last) catch {
+                    last.deinit(allocator);
+                    allocator.destroy(last);
+                };
+            } else |_| {}
+        }
 
         expr_buf.clearRetainingCapacity();
     }
@@ -623,7 +655,6 @@ fn printNum(n: f64, writer: anytype) !void {
 fn printExpr(expr: *const Expr, writer: anytype) PrintError!void {
     try printExprPretty(expr, writer, true);
 }
-
 
 /// Writes a string literal with escapes so output is valid Lispium syntax.
 fn writeEscapedString(writer: anytype, s: []const u8) !void {

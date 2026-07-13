@@ -95,6 +95,8 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokens: std.ArrayList([]const u8),
     position: usize = 0,
+    positions: ?*PosMap = null,        // optional per-node source positions
+    error_token: ?[]const u8 = null,   // innermost failing token on error
 
     pub fn init(allocator: std.mem.Allocator, tokens: std.ArrayList([]const u8)) Parser;
     pub fn parseExpr(self: *Parser) !*Expr;  // Parse one expression
@@ -104,6 +106,12 @@ pub const Error = error{
     UnexpectedEOF,    // Missing closing paren or incomplete expression
     UnexpectedToken,  // Unexpected ')' without matching '('
 };
+
+// Source positions (opt-in): maps parse-tree nodes to the token that
+// starts them ('(' for lists). Tokens are slices into the source, so
+// tokenLineCol recovers 1-based line/column.
+pub const PosMap = std.AutoHashMap(*const Expr, []const u8);
+pub fn tokenLineCol(source: []const u8, token: []const u8) ?LineCol;
 ```
 
 **Parsing rules:**
@@ -173,6 +181,14 @@ pub const MAX_EVAL_DEPTH = 2000;          // recursion guard (clean error, no st
 pub const MAX_LOOP_ITERATIONS = 10_000_000; // cap for (sum ...) and (product ...)
 
 pub fn eval(expr: *Expr, env: *Env) Error!*Expr;
+
+// Source-position tracking (opt-in, threadlocal like the call stack and
+// error context): install the parser's PosMap before evaluating; on error
+// the top of the internal position stack is the innermost failing
+// subexpression's source token. Position info doesn't survive into copied
+// lambda bodies — there, errors report the call site plus the call stack.
+pub fn setPositionMap(map: ?*const PosMap) void;
+pub fn takeErrorPosition() ?[]const u8;
 ```
 
 **Evaluation order:**

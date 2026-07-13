@@ -4,8 +4,9 @@ const repl = @import("repl.zig");
 const lsp = @import("lsp.zig");
 const bench = @import("bench.zig");
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
-const Parser = @import("parser.zig").Parser;
-const Expr = @import("parser.zig").Expr;
+const parser_mod = @import("parser.zig");
+const Parser = parser_mod.Parser;
+const Expr = parser_mod.Expr;
 const evaluator = @import("evaluator.zig");
 const Env = @import("environment.zig").Env;
 const builtins = @import("builtins.zig");
@@ -509,8 +510,13 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
         try stderr.print("hint: Lispium uses prefix notation, e.g. (+ 1 2) or (sin x)\n", .{});
     }
 
-    // Parse and evaluate every expression in the input (not just the first)
+    // Parse and evaluate every expression in the input (not just the
+    // first), recording per-node source positions
+    var positions = parser_mod.PosMap.init(allocator);
+    defer positions.deinit();
+    defer evaluator.setPositionMap(null);
     var parser = Parser.init(allocator, tokens);
+    parser.positions = &positions;
     while (parser.position < tokens.items.len) {
         const expr = parser.parseExpr() catch |err| {
             const err_msg = switch (err) {
@@ -521,7 +527,8 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
                 error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
                 error.OutOfMemory => "out of memory",
             };
-            try stderr.print("Parse error: {s}\n", .{err_msg});
+            try printInlineLocation(stderr, "Parse error", input, parser.error_token);
+            try stderr.print("{s}\n", .{err_msg});
             return false;
         };
         defer {
@@ -530,6 +537,7 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
         }
 
         // Evaluate
+        evaluator.setPositionMap(&positions);
         const result = evaluator.eval(expr, &env) catch |err| {
             const err_msg = switch (err) {
                 error.UnsupportedOperator => "unsupported operator",
@@ -545,10 +553,11 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
                 error.Undefined => "result is mathematically undefined at this point",
             };
             const ctx = evaluator.takeErrorContext();
+            try printInlineLocation(stderr, "Eval error", input, evaluator.takeErrorPosition());
             if (ctx.len > 0) {
-                try stderr.print("Eval error: {s} (in '{s}')\n", .{ err_msg, ctx });
+                try stderr.print("{s} (in '{s}')\n", .{ err_msg, ctx });
             } else {
-                try stderr.print("Eval error: {s}\n", .{err_msg});
+                try stderr.print("{s}\n", .{err_msg});
             }
             try printCallStack(stderr);
             return false;
@@ -619,13 +628,20 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
     defer expr_buf.deinit(allocator);
     var paren_depth: i32 = 0;
 
-    while (lines.next()) |raw_line| {
+    // Node-to-token positions for the current statement, so errors can
+    // point at the failing subexpression instead of the statement start
+    var positions = parser_mod.PosMap.init(allocator);
+    defer positions.deinit();
+    defer evaluator.setPositionMap(null);
+
+    lines_loop: while (lines.next()) |raw_line| {
         line_num += 1;
 
         // Skip a shebang line so .lspm files can be executable scripts
         if (line_num == 1 and std.mem.startsWith(u8, raw_line, "#!")) continue;
 
-        // Trim whitespace
+        // Trim whitespace (for the skip decisions only; the buffer keeps
+        // the original layout so error positions map back to the file)
         const line = std.mem.trim(u8, raw_line, " \t\r");
 
         // Skip empty lines and comments (only when not in a multi-line expr)
@@ -636,24 +652,22 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
         }
 
         // Strip trailing comment from non-comment lines
-        var code_end: usize = line.len;
+        var code_end: usize = raw_line.len;
         var in_string = false;
-        for (line, 0..) |c, i| {
+        for (raw_line, 0..) |c, i| {
             if (c == '"') in_string = !in_string;
             if (c == ';' and !in_string) {
                 code_end = i;
                 break;
             }
         }
-        const code = std.mem.trim(u8, line[0..code_end], " \t");
+        const code = std.mem.trimEnd(u8, raw_line[0..code_end], " \t\r");
 
         if (code.len == 0 and paren_depth == 0) continue;
 
-        // Append to expression buffer
-        if (expr_buf.items.len > 0) {
-            try expr_buf.append(allocator, ' ');
-        }
+        // Append to the expression buffer, preserving line/column layout
         try expr_buf.appendSlice(allocator, code);
+        try expr_buf.append(allocator, '\n');
 
         // Count parentheses
         for (code) |c| {
@@ -690,93 +704,105 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
                 continue;
             }
 
-            // Parse
+            // Parse and evaluate every expression in the buffer (a single
+            // line can hold several statements), recording per-node
+            // source positions as we go
+            positions.clearRetainingCapacity();
             var parser = Parser.init(allocator, tokens);
-            const expr = parser.parseExpr() catch |err| {
-                const err_msg = switch (err) {
-                    error.UnexpectedToken => "unexpected token",
-                    error.UnexpectedEOF => "unexpected end of input",
-                    error.RecursionLimit => "expression too deeply nested",
-                error.UnterminatedString => "unterminated string literal",
-                error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
-                    error.OutOfMemory => "out of memory",
+            parser.positions = &positions;
+            while (parser.position < tokens.items.len) {
+                const expr = parser.parseExpr() catch |err| {
+                    const err_msg = switch (err) {
+                        error.UnexpectedToken => "unexpected token",
+                        error.UnexpectedEOF => "unexpected end of input",
+                        error.RecursionLimit => "expression too deeply nested",
+                        error.UnterminatedString => "unterminated string literal",
+                        error.InvalidEscape => "invalid escape sequence in string (use \\n \\t \\r \\\\ \\\")",
+                        error.OutOfMemory => "out of memory",
+                    };
+                    try printErrorLocation(stderr, file_path, start_line, stable_input, parser.error_token);
+                    try stderr.print(": Parse error: {s}\n", .{err_msg});
+                    had_error = true;
+                    expr_buf.clearRetainingCapacity();
+                    paren_depth = 0;
+                    continue :lines_loop;
                 };
-                try stderr.print("{s}:{}: Parse error: {s}\n", .{ file_path, start_line, err_msg });
-                had_error = true;
-                expr_buf.clearRetainingCapacity();
-                paren_depth = 0;
-                continue;
-            };
-            defer {
-                expr.deinit(allocator);
-                allocator.destroy(expr);
-            }
-
-            // Evaluate
-            const eval_start = if (profile) std.Io.Timestamp.now(io, .awake).nanoseconds else 0;
-            const result = evaluator.eval(expr, &env) catch |err| {
-                const err_msg = switch (err) {
-                    error.UnsupportedOperator => "unsupported operator",
-                    error.InvalidArgument => "invalid argument(s)",
-                    error.KeyNotFound => "unknown function or variable",
-                    error.OutOfMemory => "out of memory",
-                    error.RecursionLimit => "recursion or iteration limit exceeded",
-                    error.InvalidLambda => "invalid lambda expression",
-                    error.InvalidDefine => "invalid define expression",
-                    error.InvalidSyntax => "malformed special form (wrong shape or argument count)",
-                    error.WrongNumberOfArguments => "wrong number of arguments",
-                    error.EvaluationError => "evaluation error",
-                error.Undefined => "result is mathematically undefined at this point",
-                };
-                const ctx = evaluator.takeErrorContext();
-                if (ctx.len > 0) {
-                    try stderr.print("{s}:{}: Eval error: {s} (in '{s}')\n", .{ file_path, start_line, err_msg, ctx });
-                } else {
-                    try stderr.print("{s}:{}: Eval error: {s}\n", .{ file_path, start_line, err_msg });
+                defer {
+                    expr.deinit(allocator);
+                    allocator.destroy(expr);
                 }
-                try printCallStack(stderr);
-                had_error = true;
-                expr_buf.clearRetainingCapacity();
-                paren_depth = 0;
-                continue;
-            };
-            defer {
-                result.deinit(allocator);
-                allocator.destroy(result);
-            }
 
-            if (profile) {
-                const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - eval_start;
-                const preview_len = @min(expr_buf.items.len, 48);
-                const text = try allocator.dupe(u8, expr_buf.items[0..preview_len]);
-                try profile_entries.append(allocator, .{ .line = start_line, .text = text, .ns = elapsed });
-            }
+                // Evaluate
+                evaluator.setPositionMap(&positions);
+                const eval_start = if (profile) std.Io.Timestamp.now(io, .awake).nanoseconds else 0;
+                const result = evaluator.eval(expr, &env) catch |err| {
+                    const err_msg = switch (err) {
+                        error.UnsupportedOperator => "unsupported operator",
+                        error.InvalidArgument => "invalid argument(s)",
+                        error.KeyNotFound => "unknown function or variable",
+                        error.OutOfMemory => "out of memory",
+                        error.RecursionLimit => "recursion or iteration limit exceeded",
+                        error.InvalidLambda => "invalid lambda expression",
+                        error.InvalidDefine => "invalid define expression",
+                        error.InvalidSyntax => "malformed special form (wrong shape or argument count)",
+                        error.WrongNumberOfArguments => "wrong number of arguments",
+                        error.EvaluationError => "evaluation error",
+                        error.Undefined => "result is mathematically undefined at this point",
+                    };
+                    const ctx = evaluator.takeErrorContext();
+                    try printErrorLocation(stderr, file_path, start_line, stable_input, evaluator.takeErrorPosition());
+                    if (ctx.len > 0) {
+                        try stderr.print(": Eval error: {s} (in '{s}')\n", .{ err_msg, ctx });
+                    } else {
+                        try stderr.print(": Eval error: {s}\n", .{err_msg});
+                    }
+                    try printCallStack(stderr);
+                    had_error = true;
+                    expr_buf.clearRetainingCapacity();
+                    paren_depth = 0;
+                    continue :lines_loop;
+                };
+                defer {
+                    result.deinit(allocator);
+                    allocator.destroy(result);
+                }
 
-            // Statements that print for themselves aren't echoed again;
-            // quiet mode (the test runner) suppresses all echoes
-            const is_print_stmt = quiet or (expr.* == .list and expr.list.items.len > 0 and
-                expr.list.items[0].* == .symbol and
-                (std.mem.eql(u8, expr.list.items[0].symbol, "print") or
-                    std.mem.eql(u8, expr.list.items[0].symbol, "begin")));
-            if (is_print_stmt) {
-                expr_buf.clearRetainingCapacity();
-                paren_depth = 0;
-                continue;
-            }
+                if (profile) {
+                    const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - eval_start;
+                    var pbuf: [48]u8 = undefined;
+                    const condensed = condenseWhitespace(&pbuf, expr_buf.items);
+                    const text = try allocator.dupe(u8, condensed);
+                    try profile_entries.append(allocator, .{ .line = start_line, .text = text, .ns = elapsed });
+                }
 
-            // Print a condensed version of the expression and result
-            const display_expr = if (expr_buf.items.len > 60)
-                expr_buf.items[0..57]
-            else
-                expr_buf.items;
-            const ellipsis: []const u8 = if (expr_buf.items.len > 60) "..." else "";
-            try stdout.print("; {s}{s}\n", .{ display_expr, ellipsis });
-            try printExprSimple(result, stdout);
-            try stdout.print("\n\n", .{});
+                // Statements that print for themselves aren't echoed again;
+                // quiet mode (the test runner) suppresses all echoes
+                const is_print_stmt = quiet or (expr.* == .list and expr.list.items.len > 0 and
+                    expr.list.items[0].* == .symbol and
+                    (std.mem.eql(u8, expr.list.items[0].symbol, "print") or
+                        std.mem.eql(u8, expr.list.items[0].symbol, "begin")));
+                if (is_print_stmt) continue;
+
+                // Print a condensed version of the expression and result
+                var dbuf: [61]u8 = undefined;
+                const condensed = condenseWhitespace(&dbuf, expr_buf.items);
+                const display_expr = if (condensed.len > 60) condensed[0..57] else condensed;
+                const ellipsis: []const u8 = if (condensed.len > 60) "..." else "";
+                try stdout.print("; {s}{s}\n", .{ display_expr, ellipsis });
+                try printExprSimple(result, stdout);
+                try stdout.print("\n\n", .{});
+            }
 
             expr_buf.clearRetainingCapacity();
             paren_depth = 0;
         }
+    }
+
+    // An unterminated statement at EOF is an error, not something to
+    // silently drop
+    if (std.mem.trim(u8, expr_buf.items, " \t\r\n").len > 0) {
+        try stderr.print("{s}:{d}: Parse error: unexpected end of input (unclosed expression)\n", .{ file_path, start_line });
+        had_error = true;
     }
 
     if (profile and profile_entries.items.len > 0) {
@@ -802,7 +828,6 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
     }
     return !had_error;
 }
-
 
 /// Writes a string literal with escapes so output is valid Lispium syntax.
 fn writeEscapedString(writer: anytype, s: []const u8) !void {
@@ -883,6 +908,53 @@ fn printCompletions(stdout: anytype, shell: []const u8, stderr: anytype) !void {
 }
 
 /// Prints the user-function call chain recorded for the last error.
+/// Collapses newlines and indentation runs into single spaces for
+/// one-line previews (echo lines, profile tables). Truncates at out.len.
+fn condenseWhitespace(out: []u8, src: []const u8) []const u8 {
+    var n: usize = 0;
+    var in_ws = false;
+    for (src) |c| {
+        if (n >= out.len) break;
+        if (std.ascii.isWhitespace(c)) {
+            in_ws = true;
+            continue;
+        }
+        if (in_ws and n > 0) {
+            out[n] = ' ';
+            n += 1;
+            if (n >= out.len) break;
+        }
+        in_ws = false;
+        out[n] = c;
+        n += 1;
+    }
+    return out[0..n];
+}
+
+/// Prints "Kind at line:col: " (or just "Kind: " when the position is
+/// unknown) for `lispium eval` inputs, which have no file name.
+fn printInlineLocation(writer: anytype, kind: []const u8, input: []const u8, token: ?[]const u8) !void {
+    if (token) |tok| {
+        if (parser_mod.tokenLineCol(input, tok)) |lc| {
+            try writer.print("{s} at {d}:{d}: ", .{ kind, lc.line, lc.col });
+            return;
+        }
+    }
+    try writer.print("{s}: ", .{kind});
+}
+
+/// Prints "file:line:col" when the failing token's position within the
+/// statement is known, falling back to "file:line" (the statement start).
+fn printErrorLocation(writer: anytype, file_path: []const u8, start_line: usize, statement: []const u8, token: ?[]const u8) !void {
+    if (token) |tok| {
+        if (parser_mod.tokenLineCol(statement, tok)) |lc| {
+            try writer.print("{s}:{d}:{d}", .{ file_path, start_line + lc.line - 1, lc.col });
+            return;
+        }
+    }
+    try writer.print("{s}:{d}", .{ file_path, start_line });
+}
+
 fn printCallStack(writer: anytype) !void {
     const frames = evaluator.takeCallStack();
     if (frames.len == 0) return;
