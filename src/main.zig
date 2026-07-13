@@ -898,6 +898,7 @@ fn printCallStack(writer: anytype) !void {
 
 fn printExprSimple(expr: *const Expr, writer: anytype) !void {
     switch (expr.*) {
+        .big => |b| try builtins.writeBig(b, writer),
         .number => |n| {
             if (@abs(n - @round(n)) < 1e-10 and @abs(n) < 1e15) {
                 try writer.print("{d}", .{@as(i64, @intFromFloat(@round(n)))});

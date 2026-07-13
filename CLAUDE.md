@@ -14,10 +14,11 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 8. [Evaluator Special Forms](#evaluator-special-forms)
 9. [Environment and Assumptions](#environment-and-assumptions)
 10. [Test Organization](#test-organization)
-11. [Adding New Features](#adding-new-features)
-12. [Common Patterns](#common-patterns)
-13. [Error Handling](#error-handling)
-14. [REPL Features](#repl-features)
+11. [Implementation Loop](#implementation-loop)
+12. [Adding New Features](#adding-new-features)
+13. [Common Patterns](#common-patterns)
+14. [Error Handling](#error-handling)
+15. [REPL Features](#repl-features)
 
 ---
 
@@ -239,6 +240,7 @@ The `Expr` tagged union is the fundamental data structure:
 ```zig
 pub const Expr = union(enum) {
     number: f64,                        // Numeric literals
+    big: Big,                           // Arbitrary-precision integers (owned limbs)
     symbol: []const u8,                 // Variable/function names (NOT owned)
     owned_symbol: []const u8,           // Dynamically allocated strings (owned, freed on deinit)
     list: std.ArrayList(*Expr),         // S-expressions: (op arg1 arg2 ...)
@@ -709,6 +711,20 @@ return result;
 Arithmetic on integers and rationals is exact (`(+ 1/3 1/6)` → `1/2`);
 mixing with floats produces floats. `evalf` converts to float.
 
+### Big Integers (literals, automatic)
+
+Integer literals and results outside the f64-exact range become
+arbitrary-precision integers (`Expr.big`, backed by `std.math.big.int`).
+Results demote back to plain numbers when they fit exactly.
+
+- Literals: any all-digit token too large for exact f64 (e.g. `99999999999999999999`)
+- Producers: `+ - * ^` on integers, `factorial` above 20, `abs`, `mod`, `gcd`
+- `/` is exact when each divisor divides evenly, else float
+- `= < >` compare bigs exactly; `integer?`/`number?`/`rational?` are true
+- Mixing with floats (or `evalf`) converts to approximate f64
+- `(^ base exp)` promotes for integer base with integer exponent 0..1e6;
+  `factorial` is capped at 100000
+
 ### Strings (6 functions + literals)
 
 | Function | Signature | Description |
@@ -1175,6 +1191,26 @@ test "feature: description" {
     try testing.expectEqualStrings("expected", result.owned_symbol);
 }
 ```
+
+---
+
+## Implementation Loop
+
+The workflow for every feature, start to finish:
+
+1. **Read before writing.** Find the closest existing pattern (e.g. rationals were the template for bigints) and grep how it's threaded through builtins/symbolic/printers.
+2. **Verify the API against the installed Zig.** Don't trust training data; open the actual stdlib source for the version in use (`mise` path) and confirm signatures.
+3. **Helpers first.** Small section with clear ownership comments: who allocates, who deinits, demotion policy, `errdefer` on every alloc.
+4. **Wire exact paths before float fallbacks.** In each builtin, ordering matters: pure-float fast path, then exact (big/rational), then float contagion, then symbolic passthrough.
+5. **Build after each logical unit**, not at the end. Exhaustive switches will tell you every site you missed.
+6. **Smoke test with `lispium eval` one-liners** covering the happy path, boundaries, and mixing (e.g. big+float, exact vs inexact division).
+7. **Run the full suite** (`zig build test`) to catch behavior changes in existing tests.
+8. **Add a feature test file** in `src/tests/`, register in `src/tests.zig`, rerun. `testing.allocator` catches leaks for free.
+9. **Update docs**: docs.zig summaries, CLAUDE.md reference section, any caps/limits that changed.
+10. **`zig fmt` touched files, then commit.**
+11. **Release**: bump one minor version (`./scripts/bump-version.sh 0.X.0`), update CHANGELOG.md, commit, `git tag v0.X.0`, `git push origin main --tags`. This triggers release.yml (GitHub Release binaries) and pypi.yml (PyPI).
+12. **After release assets exist**: update package manifest checksums (Formula/lispium.rb, winget installer.yaml, aur/PKGBUILD + .SRCINFO), commit + push. Publish the VS Code extension (`npx vsce publish` in editor/vscode).
+13. **Update the local install**: `uv tool upgrade lispium` (once PyPI publish completes).
 
 ---
 

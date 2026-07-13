@@ -45,6 +45,7 @@ comptime {
     _ = @import("tests/regressions.zig");
     _ = @import("tests/formatter.zig");
     _ = @import("tests/language.zig");
+    _ = @import("tests/bigint.zig");
 }
 
 // Re-export helpers for any external use

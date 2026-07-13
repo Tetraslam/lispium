@@ -573,6 +573,7 @@ fn validateExprInner(expr: *const Expr, visited: *std.AutoHashMap(usize, void), 
 
     switch (expr.*) {
         .number => {},
+        .big => {},
         .symbol, .owned_symbol, .string => {},
         .lambda => |lam| {
             const body_ptr = @intFromPtr(lam.body);
@@ -648,6 +649,7 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
 
     switch (expr.*) {
         .number => |n| try printNum(n, writer),
+        .big => |b| builtins.writeBig(b, writer) catch return PrintError.OutOfMemory,
         .string => |s| try writeEscapedString(writer, s),
         .symbol, .owned_symbol => |s| {
             // Use Greek letters for common symbols

@@ -132,6 +132,10 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
             // Strings are self-evaluating
             return try symbolic.copyExpr(expr, env.allocator);
         },
+        .big => {
+            // Big integers are self-evaluating
+            return try symbolic.copyExpr(expr, env.allocator);
+        },
         .symbol => |sym| {
             // Try to get a value from the environment, but if not found,
             // treat it as a symbolic variable
@@ -462,7 +466,7 @@ fn isShadowed(shadowed: *std.ArrayList([]const u8), name: []const u8) bool {
 /// lambda/let/letrec/sum/product/define forms are respected (shadowed).
 fn captureFreeVars(expr: *const Expr, shadowed: *std.ArrayList([]const u8), env: *Env) Error!*Expr {
     switch (expr.*) {
-        .number, .string, .lambda => return try symbolic.copyExpr(expr, env.allocator),
+        .number, .big, .string, .lambda => return try symbolic.copyExpr(expr, env.allocator),
         .symbol, .owned_symbol => {
             const name = switch (expr.*) {
                 .symbol => |s| s,
@@ -711,6 +715,7 @@ fn evalBegin(expr: *Expr, env: *Env) Error!*Expr {
 fn isTruthy(v: *const Expr) bool {
     return switch (v.*) {
         .number => |n| n != 0,
+        .big => true, // normalized bigs are never zero
         .symbol, .owned_symbol => true,
         .string => |s| s.len > 0,
         .list => |lst| lst.items.len > 0,
@@ -975,6 +980,7 @@ fn evalIf(expr: *Expr, env: *Env) Error!*Expr {
     // Truthy: anything that's not 0 or empty list
     const is_truthy = switch (cond.*) {
         .number => |n| n != 0,
+        .big => true, // normalized bigs are never zero
         .symbol, .owned_symbol => true,
         .string => |s| s.len > 0,
         .list => |lst| lst.items.len > 0,

@@ -16,6 +16,9 @@ pub const MAX_PARSE_DEPTH = 256;
 
 pub const Expr = union(enum) {
     number: f64,
+    /// Arbitrary-precision integer (values outside the f64-exact range;
+    /// smaller results demote back to .number)
+    big: Big,
     symbol: []const u8,
     /// Owned symbol: a symbol whose memory should be freed on deinit
     owned_symbol: []const u8,
@@ -25,6 +28,16 @@ pub const Expr = union(enum) {
     /// Lambda: stores parameter names and body expression
     /// Format: lambda{ .params = ["x", "y"], .body = <expr> }
     lambda: Lambda,
+
+    pub const Big = struct {
+        /// Owned limb storage in std.math.big.int.Const form (normalized)
+        limbs: []std.math.big.Limb,
+        positive: bool,
+
+        pub fn toConst(self: Big) std.math.big.int.Const {
+            return .{ .limbs = self.limbs, .positive = self.positive };
+        }
+    };
 
     pub const Lambda = struct {
         params: std.ArrayList([]const u8),
@@ -53,6 +66,9 @@ pub const Expr = union(enum) {
             },
             .string => |s| {
                 allocator.free(s);
+            },
+            .big => |b| {
+                allocator.free(b.limbs);
             },
             else => {},
         }
@@ -193,6 +209,16 @@ pub const Parser = struct {
                 result.* = .{ .list = list };
                 return result;
             }
+            // Big integer literal: an all-digit token whose value exceeds
+            // the exactly-representable f64 integer range
+            if (parseBigLiteral(self.allocator, token)) |big| {
+                const result = self.allocator.create(Expr) catch |err| {
+                    self.allocator.free(big.limbs);
+                    return err;
+                };
+                result.* = .{ .big = big };
+                return result;
+            }
             // Try parsing as a number.
             const result = try self.allocator.create(Expr);
             if (std.fmt.parseFloat(f64, token)) |n| {
@@ -260,4 +286,31 @@ fn parseRationalLiteral(token: []const u8) ?struct { p: i64, q: i64 } {
     const q = std.fmt.parseInt(i64, token[slash + 1 ..], 10) catch return null;
     if (q == 0) return null;
     return .{ .p = p, .q = q };
+}
+
+/// Parses an integer literal too large for exact f64 representation into
+/// an arbitrary-precision integer. Returns null for anything else.
+fn parseBigLiteral(allocator: std.mem.Allocator, token: []const u8) ?Expr.Big {
+    var digits = token;
+    var negative = false;
+    if (digits.len > 0 and (digits[0] == '-' or digits[0] == '+')) {
+        negative = digits[0] == '-';
+        digits = digits[1..];
+    }
+    if (digits.len == 0) return null;
+    for (digits) |c| {
+        if (c < '0' or c > '9') return null;
+    }
+    // Small integers stay as plain (exact) numbers
+    if (digits.len <= 15) return null;
+
+    var m = std.math.big.int.Managed.initSet(allocator, 0) catch return null;
+    defer m.deinit();
+    m.setString(10, digits) catch return null;
+    if (m.fitsInTwosComp(.signed, 54)) return null; // exact in f64
+
+    if (negative) m.negate();
+    const c = m.toConst();
+    const limbs = allocator.dupe(std.math.big.Limb, c.limbs) catch return null;
+    return .{ .limbs = limbs, .positive = c.positive };
 }

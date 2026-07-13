@@ -105,6 +105,7 @@ pub fn makeRationalOrInt(allocator: std.mem.Allocator, p_in: i64, q_in: i64) Bui
 pub fn numericF64(e: *const Expr) ?f64 {
     switch (e.*) {
         .number => |n| return n,
+        .big => |b| return b.toConst().toFloat(f64, .nearest_even)[0],
         else => {
             if (asRational(e)) |r| {
                 return @as(f64, @floatFromInt(r.p)) / @as(f64, @floatFromInt(r.q));
@@ -112,6 +113,97 @@ pub fn numericF64(e: *const Expr) ?f64 {
             return null;
         },
     }
+}
+
+// ============================================================================
+// Arbitrary-precision integers: .big holds normalized limbs (see parser.zig).
+// Any integer-valued operand can enter big arithmetic; results demote back
+// to plain numbers when exactly representable in f64.
+// ============================================================================
+
+const BigInt = std.math.big.int.Managed;
+
+/// True when any argument is a big integer (promotes the whole operation).
+fn anyBig(args: std.ArrayList(*Expr)) bool {
+    for (args.items) |a| {
+        if (a.* == .big) return true;
+    }
+    return false;
+}
+
+/// Reads an expression as an arbitrary-precision integer (bigs and
+/// integer-valued plain numbers). Caller owns (and must deinit) the result.
+fn bigFromExpr(e: *const Expr, allocator: std.mem.Allocator) ?BigInt {
+    switch (e.*) {
+        .big => |b| {
+            var m = BigInt.init(allocator) catch return null;
+            m.copy(b.toConst()) catch {
+                m.deinit();
+                return null;
+            };
+            return m;
+        },
+        .number => |n| {
+            if (n == @floor(n) and @abs(n) <= 9.0e15) {
+                return BigInt.initSet(allocator, @as(i64, @intFromFloat(n))) catch null;
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+/// Wraps a computed big integer as an Expr, demoting to a plain number when
+/// the value is exactly representable in f64. Consumes (deinits) `m`.
+pub fn makeBigResult(allocator: std.mem.Allocator, m: *BigInt) BuiltinError!*Expr {
+    defer m.deinit();
+    const c = m.toConst();
+    if (c.fitsInTwosComp(.signed, 54)) {
+        const v = c.toInt(i64) catch return BuiltinError.OutOfMemory;
+        const r = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        r.* = .{ .number = @floatFromInt(v) };
+        return r;
+    }
+    const limbs = allocator.dupe(std.math.big.Limb, c.limbs) catch return BuiltinError.OutOfMemory;
+    const r = allocator.create(Expr) catch {
+        allocator.free(limbs);
+        return BuiltinError.OutOfMemory;
+    };
+    r.* = .{ .big = .{ .limbs = limbs, .positive = c.positive } };
+    return r;
+}
+
+/// Folds integer arguments with a big-int operation. Returns null when any
+/// argument isn't an integer (caller falls through to float paths).
+fn bigFold(args: std.ArrayList(*Expr), allocator: std.mem.Allocator, comptime op: enum { add, sub, mul }) BuiltinError!?*Expr {
+    var acc = bigFromExpr(args.items[0], allocator) orelse return null;
+    for (args.items[1..]) |arg| {
+        var b = bigFromExpr(arg, allocator) orelse {
+            acc.deinit();
+            return null;
+        };
+        defer b.deinit();
+        const res = switch (op) {
+            .add => acc.add(&acc, &b),
+            .sub => acc.sub(&acc, &b),
+            .mul => acc.mul(&acc, &b),
+        };
+        res catch {
+            acc.deinit();
+            return BuiltinError.OutOfMemory;
+        };
+    }
+    return try makeBigResult(allocator, &acc);
+}
+
+/// Exact comparison of two integer expressions (either may be big).
+/// Returns null when either side isn't an integer.
+fn bigOrder(a: *const Expr, b: *const Expr, allocator: std.mem.Allocator) ?std.math.Order {
+    var ma = bigFromExpr(a, allocator) orelse return null;
+    defer ma.deinit();
+    var mb = bigFromExpr(b, allocator) orelse return null;
+    defer mb.deinit();
+    return ma.toConst().order(mb.toConst());
 }
 
 const RatOverflow = error{Overflow};
@@ -369,6 +461,11 @@ fn signF(x: f64) f64 {
 pub fn builtin_abs(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (abs x) - absolute value; (abs (complex a b)) is the magnitude
     if (args.items.len == 1) {
+        if (args.items[0].* == .big) {
+            var m = bigFromExpr(args.items[0], env.allocator) orelse return BuiltinError.OutOfMemory;
+            m.abs();
+            return makeBigResult(env.allocator, &m);
+        }
         if (asComplex(args.items[0])) |c| {
             const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
             result.* = .{ .number = @sqrt(c.re * c.re + c.im * c.im) };
@@ -391,6 +488,12 @@ pub fn builtin_round(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 }
 
 pub fn builtin_sign(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // Normalized bigs are never zero, so the sign is just the flag
+    if (args.items.len == 1 and args.items[0].* == .big) {
+        const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        result.* = .{ .number = if (args.items[0].big.positive) 1 else -1 };
+        return result;
+    }
     return unaryNumeric(args, env, "sign", signF);
 }
 
@@ -660,13 +763,13 @@ pub fn builtin_is_integer(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*E
     // (integer? x) - true for integer-valued numbers
     if (args.items.len != 1) return BuiltinError.InvalidArgument;
     const arg = args.items[0];
-    return makeBool(env.allocator, arg.* == .number and arg.number == @floor(arg.number));
+    return makeBool(env.allocator, arg.* == .big or (arg.* == .number and arg.number == @floor(arg.number)));
 }
 
 pub fn builtin_is_rational(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (rational? x) - true for exact rationals and integers
+    // (rational? x) - true for exact rationals and integers (incl. bigs)
     if (args.items.len != 1) return BuiltinError.InvalidArgument;
-    return makeBool(env.allocator, asRational(args.items[0]) != null);
+    return makeBool(env.allocator, args.items[0].* == .big or asRational(args.items[0]) != null);
 }
 
 pub fn builtin_is_symbol(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -1166,6 +1269,20 @@ pub fn builtin_add(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         return result;
     }
 
+    // Arbitrary-precision integers: any big operand promotes the whole sum
+    if (anyBig(args)) {
+        if (try bigFold(args, env.allocator, .add)) |r| return r;
+        // Float contagion: big mixed with non-integer numerics
+        var fbuf: [16]f64 = undefined;
+        if (allNumericF64(args, &fbuf)) |vals| {
+            var total: f64 = 0;
+            for (vals) |v| total += v;
+            const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .number = total };
+            return result;
+        }
+    }
+
     // Exact rational addition (any mix of integers and rationals)
     if (anyRational(args)) {
         var rbuf: [16]RationalVal = undefined;
@@ -1281,6 +1398,11 @@ pub fn builtin_subtract(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
                 return makeRationalOrInt(env.allocator, -r.p, r.q);
             }
         }
+        if (arg.* == .big) {
+            var m = bigFromExpr(arg, env.allocator) orelse return BuiltinError.OutOfMemory;
+            m.negate();
+            return makeBigResult(env.allocator, &m);
+        }
         if (asComplex(arg)) |c| {
             return makeComplexOrReal(env, -c.re, -c.im);
         }
@@ -1323,6 +1445,19 @@ pub fn builtin_subtract(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
         const expr = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         expr.* = .{ .number = result_val };
         return expr;
+    }
+
+    // Arbitrary-precision integer subtraction
+    if (anyBig(args)) {
+        if (try bigFold(args, env.allocator, .sub)) |r| return r;
+        var fbuf: [16]f64 = undefined;
+        if (allNumericF64(args, &fbuf)) |vals| {
+            var total: f64 = vals[0];
+            for (vals[1..]) |v| total -= v;
+            const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .number = total };
+            return result;
+        }
     }
 
     // Exact rational subtraction
@@ -1415,6 +1550,19 @@ pub fn builtin_multiply(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
         const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
         result.* = .{ .number = product };
         return result;
+    }
+
+    // Arbitrary-precision integer multiplication
+    if (anyBig(args)) {
+        if (try bigFold(args, env.allocator, .mul)) |r| return r;
+        var fbuf: [16]f64 = undefined;
+        if (allNumericF64(args, &fbuf)) |vals| {
+            var total: f64 = 1;
+            for (vals) |v| total *= v;
+            const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .number = total };
+            return result;
+        }
     }
 
     // Exact rational multiplication
@@ -1526,6 +1674,50 @@ pub fn builtin_divide(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
         }
     }
 
+    // Arbitrary-precision integer division: exact only when each divisor
+    // divides evenly; otherwise fall through to float division
+    if (anyBig(args)) {
+        exact: {
+            var acc = bigFromExpr(args.items[0], env.allocator) orelse break :exact;
+            var exact_ok = true;
+            for (args.items[1..]) |arg| {
+                var b = bigFromExpr(arg, env.allocator) orelse {
+                    exact_ok = false;
+                    break;
+                };
+                defer b.deinit();
+                if (b.eqlZero()) {
+                    acc.deinit();
+                    return BuiltinError.InvalidArgument;
+                }
+                var q = BigInt.init(env.allocator) catch {
+                    acc.deinit();
+                    return BuiltinError.OutOfMemory;
+                };
+                var rem = BigInt.init(env.allocator) catch {
+                    acc.deinit();
+                    q.deinit();
+                    return BuiltinError.OutOfMemory;
+                };
+                defer rem.deinit();
+                q.divTrunc(&rem, &acc, &b) catch {
+                    acc.deinit();
+                    q.deinit();
+                    return BuiltinError.OutOfMemory;
+                };
+                if (!rem.eqlZero()) {
+                    exact_ok = false;
+                    q.deinit();
+                    break;
+                }
+                acc.deinit();
+                acc = q;
+            }
+            if (exact_ok) return makeBigResult(env.allocator, &acc);
+            acc.deinit();
+        }
+    }
+
     // Float division (any non-exact numeric argument)
     var all_numbers = true;
     var result_val: f64 = numericF64(args.items[0]) orelse blk: {
@@ -1597,6 +1789,16 @@ pub fn builtin_eq(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 
     var equal = true;
     for (args.items[1..]) |arg| {
+        // Exact big-integer equality (approximate floats would tie)
+        if (args.items[0].* == .big or arg.* == .big) {
+            if (bigOrder(args.items[0], arg, env.allocator)) |ord| {
+                if (ord != .eq) {
+                    equal = false;
+                    break;
+                }
+                continue;
+            }
+        }
         // Numeric equality bridges numbers and exact rationals
         if (numericF64(args.items[0])) |a| {
             if (numericF64(arg)) |b| {
@@ -1622,6 +1824,23 @@ pub fn builtin_eq(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 /// symbolic arguments produce an inert symbolic comparison expression.
 fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, comptime less: bool) BuiltinError!*Expr {
     if (args.items.len < 2) return BuiltinError.InvalidArgument;
+
+    // Exact chain when big integers are involved (floats would round)
+    if (anyBig(args)) exact: {
+        var holds = true;
+        var i: usize = 0;
+        while (i + 1 < args.items.len) : (i += 1) {
+            const ord = bigOrder(args.items[i], args.items[i + 1], env.allocator) orelse break :exact;
+            const ok = if (less) ord == .lt else ord == .gt;
+            if (!ok) {
+                holds = false;
+                break;
+            }
+        }
+        const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        result.* = .{ .number = if (holds) 1 else 0 };
+        return result;
+    }
 
     var fbuf: [16]f64 = undefined;
     if (allNumericF64(args, &fbuf)) |vals| {
@@ -1829,6 +2048,24 @@ pub fn builtin_implies(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr
 pub fn builtin_mod(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (mod a b) - returns a mod b
     if (args.items.len != 2) return BuiltinError.InvalidArgument;
+
+    // Big integers: floored remainder (matches @mod on floats)
+    if (anyBig(args)) {
+        var a = bigFromExpr(args.items[0], env.allocator) orelse return BuiltinError.InvalidArgument;
+        defer a.deinit();
+        var b = bigFromExpr(args.items[1], env.allocator) orelse return BuiltinError.InvalidArgument;
+        defer b.deinit();
+        if (b.eqlZero()) return BuiltinError.InvalidArgument;
+        var q = BigInt.init(env.allocator) catch return BuiltinError.OutOfMemory;
+        defer q.deinit();
+        var rem = BigInt.init(env.allocator) catch return BuiltinError.OutOfMemory;
+        q.divFloor(&rem, &a, &b) catch {
+            rem.deinit();
+            return BuiltinError.OutOfMemory;
+        };
+        return makeBigResult(env.allocator, &rem);
+    }
+
     if (args.items[0].* != .number or args.items[1].* != .number) return BuiltinError.InvalidArgument;
 
     const a = args.items[0].number;
@@ -1843,6 +2080,21 @@ pub fn builtin_mod(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 pub fn builtin_gcd(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (gcd a b) - returns greatest common divisor
     if (args.items.len != 2) return BuiltinError.InvalidArgument;
+
+    // Big integers
+    if (anyBig(args)) {
+        var a = bigFromExpr(args.items[0], env.allocator) orelse return BuiltinError.InvalidArgument;
+        defer a.deinit();
+        var b = bigFromExpr(args.items[1], env.allocator) orelse return BuiltinError.InvalidArgument;
+        defer b.deinit();
+        var g = BigInt.init(env.allocator) catch return BuiltinError.OutOfMemory;
+        g.gcd(&a, &b) catch {
+            g.deinit();
+            return BuiltinError.OutOfMemory;
+        };
+        return makeBigResult(env.allocator, &g);
+    }
+
     if (args.items[0].* != .number or args.items[1].* != .number) return BuiltinError.InvalidArgument;
 
     var a = @abs(args.items[0].number);
@@ -1943,18 +2195,41 @@ pub fn builtin_factorial(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Ex
 
     const n_f = args.items[0].number;
     if (n_f < 0 or n_f != @floor(n_f)) return BuiltinError.InvalidArgument;
-    if (n_f > 170) return BuiltinError.InvalidArgument; // Overflow protection
+    if (n_f > 100_000) return BuiltinError.InvalidArgument; // Keep runtime bounded
 
     const n: u64 = @intFromFloat(n_f);
-    var result_val: f64 = 1;
-    var i: u64 = 2;
-    while (i <= n) : (i += 1) {
-        result_val *= @floatFromInt(i);
+
+    // Small results stay exact in f64 (20! is the largest that fits)
+    if (n <= 20) {
+        var result_val: f64 = 1;
+        var i: u64 = 2;
+        while (i <= n) : (i += 1) {
+            result_val *= @floatFromInt(i);
+        }
+        const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+        result.* = .{ .number = result_val };
+        return result;
     }
 
-    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-    result.* = .{ .number = result_val };
-    return result;
+    // Larger factorials are exact arbitrary-precision integers
+    var acc = BigInt.initSet(env.allocator, 1) catch return BuiltinError.OutOfMemory;
+    var f = BigInt.init(env.allocator) catch {
+        acc.deinit();
+        return BuiltinError.OutOfMemory;
+    };
+    defer f.deinit();
+    var i: u64 = 2;
+    while (i <= n) : (i += 1) {
+        f.set(i) catch {
+            acc.deinit();
+            return BuiltinError.OutOfMemory;
+        };
+        acc.mul(&acc, &f) catch {
+            acc.deinit();
+            return BuiltinError.OutOfMemory;
+        };
+    }
+    return makeBigResult(env.allocator, &acc);
 }
 
 pub fn builtin_binomial(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -2980,8 +3255,27 @@ pub fn builtin_power(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         }
     }
 
+    // Arbitrary-precision integer powers: integer base, non-negative
+    // integer exponent (results demote when they fit exactly in f64)
+    if (args.items[1].* == .number and args.items[1].number == @floor(args.items[1].number) and
+        args.items[1].number >= 0 and args.items[1].number <= 1_000_000 and
+        (args.items[0].* == .big or (args.items[0].* == .number and
+            args.items[0].number == @floor(args.items[0].number) and @abs(args.items[0].number) <= 9.0e15)))
+    {
+        if (bigFromExpr(args.items[0], env.allocator)) |base_m| {
+            var base = base_m;
+            defer base.deinit();
+            var acc = BigInt.init(env.allocator) catch return BuiltinError.OutOfMemory;
+            acc.pow(&base, @intFromFloat(args.items[1].number)) catch {
+                acc.deinit();
+                return BuiltinError.OutOfMemory;
+            };
+            return makeBigResult(env.allocator, &acc);
+        }
+    }
+
     // If both arguments are numbers, compute the power
-    if (numericF64(args.items[0]) != null and args.items[1].* == .number and args.items[0].* != .list) {
+    if (numericF64(args.items[0]) != null and args.items[1].* == .number and args.items[0].* != .list and args.items[0].* != .big) {
         const base = args.items[0].number;
         const exp = args.items[1].number;
         // Negative base with non-integer exponent: return the principal
@@ -3088,7 +3382,7 @@ pub fn builtin_simplify(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
 /// symbol x carries a `positive` assumption in the environment.
 fn applyAssumptionRules(expr: *const Expr, env: *Env) BuiltinError!*Expr {
     switch (expr.*) {
-        .number, .symbol, .owned_symbol, .string, .lambda => {
+        .number, .big, .symbol, .owned_symbol, .string, .lambda => {
             return symbolic.copyExpr(expr, env.allocator) catch return BuiltinError.OutOfMemory;
         },
         .list => |lst| {
@@ -3146,6 +3440,11 @@ fn evalfExpr(expr: *const Expr, allocator: std.mem.Allocator) BuiltinError!*Expr
     switch (expr.*) {
         .string => {
             return symbolic.copyExpr(expr, allocator) catch return BuiltinError.OutOfMemory;
+        },
+        .big => |b| {
+            const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+            result.* = .{ .number = b.toConst().toFloat(f64, .nearest_even)[0] };
+            return result;
         },
         .number => {
             const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
@@ -6946,6 +7245,11 @@ const LatexError = error{OutOfMemory};
 
 fn exprToLatex(expr: *const Expr, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) LatexError!void {
     switch (expr.*) {
+        .big => |b| {
+            const text = b.toConst().toStringAlloc(allocator, 10, .lower) catch return error.OutOfMemory;
+            defer allocator.free(text);
+            buf.appendSlice(allocator, text) catch return error.OutOfMemory;
+        },
         .string => |s| {
             buf.appendSlice(allocator, "\\text{``") catch return error.OutOfMemory;
             buf.appendSlice(allocator, s) catch return error.OutOfMemory;
@@ -9265,8 +9569,8 @@ pub fn builtin_cons(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         // Check for tag
         if (items.len > 0 and items[0].* == .symbol and
             (std.mem.eql(u8, items[0].symbol, "vector") or
-            std.mem.eql(u8, items[0].symbol, "list") or
-            std.mem.eql(u8, items[0].symbol, "cf")))
+                std.mem.eql(u8, items[0].symbol, "list") or
+                std.mem.eql(u8, items[0].symbol, "cf")))
         {
             // Preserve tag
             const tag_copy = symbolic.copyExpr(items[0], allocator) catch return BuiltinError.OutOfMemory;
@@ -9334,9 +9638,9 @@ pub fn builtin_length(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     // Account for tagged lists
     const len: usize = if (items.len > 0 and items[0].* == .symbol and
         (std.mem.eql(u8, items[0].symbol, "vector") or
-        std.mem.eql(u8, items[0].symbol, "list") or
-        std.mem.eql(u8, items[0].symbol, "cf") or
-        std.mem.eql(u8, items[0].symbol, "matrix")))
+            std.mem.eql(u8, items[0].symbol, "list") or
+            std.mem.eql(u8, items[0].symbol, "cf") or
+            std.mem.eql(u8, items[0].symbol, "matrix")))
         items.len - 1
     else
         items.len;
@@ -9360,8 +9664,8 @@ pub fn builtin_nth(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // Account for tagged lists
     const start_idx: usize = if (items.len > 0 and items[0].* == .symbol and
         (std.mem.eql(u8, items[0].symbol, "vector") or
-        std.mem.eql(u8, items[0].symbol, "list") or
-        std.mem.eql(u8, items[0].symbol, "cf")))
+            std.mem.eql(u8, items[0].symbol, "list") or
+            std.mem.eql(u8, items[0].symbol, "cf")))
         1
     else
         0;
@@ -9389,7 +9693,7 @@ pub fn builtin_map(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     var start_idx: usize = 0;
     if (items.len > 0 and items[0].* == .symbol and
         (std.mem.eql(u8, items[0].symbol, "vector") or
-        std.mem.eql(u8, items[0].symbol, "list")))
+            std.mem.eql(u8, items[0].symbol, "list")))
     {
         const tag_copy = symbolic.copyExpr(items[0], allocator) catch return BuiltinError.OutOfMemory;
         result_list.append(allocator, tag_copy) catch return BuiltinError.OutOfMemory;
@@ -9445,7 +9749,7 @@ pub fn builtin_filter(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     var start_idx: usize = 0;
     if (items.len > 0 and items[0].* == .symbol and
         (std.mem.eql(u8, items[0].symbol, "vector") or
-        std.mem.eql(u8, items[0].symbol, "list")))
+            std.mem.eql(u8, items[0].symbol, "list")))
     {
         const tag_copy = symbolic.copyExpr(items[0], allocator) catch return BuiltinError.OutOfMemory;
         result_list.append(allocator, tag_copy) catch return BuiltinError.OutOfMemory;
@@ -9509,7 +9813,7 @@ pub fn builtin_reduce(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     var start_idx: usize = 0;
     if (items.len > 0 and items[0].* == .symbol and
         (std.mem.eql(u8, items[0].symbol, "vector") or
-        std.mem.eql(u8, items[0].symbol, "list")))
+            std.mem.eql(u8, items[0].symbol, "list")))
     {
         start_idx = 1;
     }
@@ -9596,7 +9900,7 @@ pub fn builtin_reverse(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr
     var start_idx: usize = 0;
     if (items.len > 0 and items[0].* == .symbol and
         (std.mem.eql(u8, items[0].symbol, "vector") or
-        std.mem.eql(u8, items[0].symbol, "list")))
+            std.mem.eql(u8, items[0].symbol, "list")))
     {
         const tag_copy = symbolic.copyExpr(items[0], allocator) catch return BuiltinError.OutOfMemory;
         result_list.append(allocator, tag_copy) catch return BuiltinError.OutOfMemory;
@@ -9685,6 +9989,10 @@ fn memoExprToString(expr: *const Expr, allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn memoWriteExpr(expr: *const Expr, writer: anytype) !void {
+    if (expr.* == .big) {
+        try writeBig(expr.big, writer);
+        return;
+    }
     if (asRational(expr)) |r| {
         if (expr.* == .list) {
             try writer.print("{d}/{d}", .{ r.p, r.q });
@@ -9692,6 +10000,7 @@ fn memoWriteExpr(expr: *const Expr, writer: anytype) !void {
         }
     }
     switch (expr.*) {
+        .big => |b| try writeBig(b, writer),
         .string => |s| try writer.print("\"{s}\"", .{s}),
         .number => |n| {
             if (n == @floor(n) and @abs(n) < 1e15) {
@@ -10220,7 +10529,24 @@ pub fn writeExprPlain(expr: *const Expr, writer: *std.Io.Writer) void {
     stepWriteExpr(expr, writer) catch {};
 }
 
+/// Writes a big integer in decimal (heap-rendered, so any size works).
+pub fn writeBig(b: Expr.Big, writer: anytype) !void {
+    var render_buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&render_buf);
+    const text = b.toConst().toStringAlloc(fba.allocator(), 10, .lower) catch {
+        // Enormous values: fall back to an approximate float rendering
+        const approx = b.toConst().toFloat(f64, .nearest_even)[0];
+        try writer.print("{e}", .{approx});
+        return;
+    };
+    try writer.print("{s}", .{text});
+}
+
 fn stepWriteExpr(expr: *const Expr, writer: anytype) !void {
+    if (expr.* == .big) {
+        try writeBig(expr.big, writer);
+        return;
+    }
     if (asRational(expr)) |r| {
         if (expr.* == .list) {
             try writer.print("{d}/{d}", .{ r.p, r.q });
@@ -10254,6 +10580,7 @@ fn stepWriteExpr(expr: *const Expr, writer: anytype) !void {
         }
     }
     switch (expr.*) {
+        .big => |b| try writeBig(b, writer),
         .string => |s| try writer.print("\"{s}\"", .{s}),
         .number => |n| {
             if (n == @floor(n) and @abs(n) < 1e15) {
