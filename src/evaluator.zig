@@ -101,7 +101,25 @@ pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
     eval_depth += 1;
     defer eval_depth -= 1;
     if (eval_depth > max_eval_depth) return Error.RecursionLimit;
+
+    // Step mode: show each list reduction with its result
+    if (step_mode and expr.* == .list and expr.list.items.len > 0) {
+        // Don't step into the step form itself
+        const head_is_step = expr.list.items[0].* == .symbol and
+            std.mem.eql(u8, expr.list.items[0].symbol, "step");
+        if (!head_is_step and step_count <= STEP_LIMIT) {
+            step_depth += 1;
+            defer step_depth -= 1;
+            const result = try evalInner(expr, env);
+            step_show_result(env, expr, result);
+            return result;
+        }
+    }
     return evalInner(expr, env);
+}
+
+fn step_show_result(env: *Env, expr: *const Expr, result: *const Expr) void {
+    stepShow(env, expr, result);
 }
 
 fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
@@ -216,6 +234,15 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                         },
                     };
                     return attempted;
+                }
+                // (step expr) - evaluate while printing every reduction
+                if (std.mem.eql(u8, op_expr.symbol, "step")) {
+                    if (expr.list.items.len != 2) return Error.InvalidSyntax;
+                    const was_stepping = step_mode;
+                    step_mode = true;
+                    if (!was_stepping) step_count = 0;
+                    defer step_mode = was_stepping;
+                    return try eval(expr.list.items[1], env);
                 }
                 // (time expr) - evaluate and report wall time
                 if (std.mem.eql(u8, op_expr.symbol, "time")) {
@@ -1367,7 +1394,7 @@ fn isSpecialFormHead(head: *const Expr) bool {
     const names = [_][]const u8{
         "lambda", "define", "defmacro", "if", "let", "letrec", "matrix", "sum",
         "product", "solve",     "dsolve", "quote", "quasiquote", "unquote",
-        "begin",  "cond",       "and",   "or",    "try",
+        "begin",  "cond",       "and",   "or",    "try",   "step",
     };
     for (names) |n| {
         if (std.mem.eql(u8, head.symbol, n)) return true;
@@ -1902,6 +1929,36 @@ fn closedFormSum(var_name: []const u8, start_val: *Expr, end_val: *Expr, body: *
     }
 
     return null;
+}
+
+// Step evaluator state: when active, every list reduction is printed
+// (capped so pathological programs don't flood the terminal)
+threadlocal var step_mode: bool = false;
+threadlocal var step_count: usize = 0;
+threadlocal var step_depth: usize = 0;
+const STEP_LIMIT = 200;
+
+fn stepShow(env: *Env, expr: *const Expr, result: ?*const Expr) void {
+    const out = env.out orelse return;
+    if (step_count >= STEP_LIMIT) {
+        if (step_count == STEP_LIMIT) {
+            out.writeAll("  ... (step limit reached)\n") catch {};
+            step_count += 1;
+        }
+        return;
+    }
+    step_count += 1;
+    var d: usize = 0;
+    while (d < step_depth) : (d += 1) out.writeAll("  ") catch {};
+    if (result) |r| {
+        @import("builtins.zig").writeExprPlain(expr, out);
+        out.writeAll("  =>  ") catch {};
+        @import("builtins.zig").writeExprPlain(r, out);
+    } else {
+        @import("builtins.zig").writeExprPlain(expr, out);
+    }
+    out.writeAll("\n") catch {};
+    out.flush() catch {};
 }
 
 threadlocal var trace_depth: usize = 0;

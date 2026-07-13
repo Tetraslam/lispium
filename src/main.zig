@@ -87,6 +87,7 @@ fn mainImpl(init: std.process.Init) !void {
             var file_path: ?[]const u8 = null;
             var watch = false;
             var timed = false;
+            var profile = false;
             var script_args: std.ArrayList([]const u8) = .empty;
             defer script_args.deinit(allocator);
             while (args_it.next()) |a| {
@@ -94,6 +95,8 @@ fn mainImpl(init: std.process.Init) !void {
                     watch = true;
                 } else if (file_path == null and std.mem.eql(u8, a, "--time")) {
                     timed = true;
+                } else if (file_path == null and std.mem.eql(u8, a, "--profile")) {
+                    profile = true;
                 } else if (file_path == null) {
                     file_path = a;
                 } else {
@@ -111,7 +114,10 @@ fn mainImpl(init: std.process.Init) !void {
             }
 
             const start = if (timed) std.Io.Timestamp.now(io, .awake).nanoseconds else 0;
-            const ok = try runFile(allocator, io, path, script_args.items, stdout, stderr);
+            const ok = if (profile)
+                try runFileProfiled(allocator, io, path, script_args.items, stdout, stderr)
+            else
+                try runFile(allocator, io, path, script_args.items, stdout, stderr);
             if (timed) {
                 const us: u64 = @intCast(@max(0, @divTrunc(std.Io.Timestamp.now(io, .awake).nanoseconds - start, 1000)));
                 try stderr.print("total: {d}.{d:0>3}ms\n", .{ us / 1000, us % 1000 });
@@ -181,7 +187,7 @@ fn mainImpl(init: std.process.Init) !void {
             }
             var failed: usize = 0;
             for (files.items) |path| {
-                const ok = try runFileImpl(allocator, io, path, &.{}, stdout, stderr, true);
+                const ok = try runFileImpl(allocator, io, path, &.{}, stdout, stderr, true, false);
                 if (ok) {
                     try stdout.print("ok   {s}\n", .{path});
                 } else {
@@ -445,7 +451,7 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  lispium repl [file.lspm]  Start interactive REPL (optionally preloading a file)
         \\  lispium eval "<expr>"     Evaluate a single expression
-        \\  lispium run <file.lspm>   Run a file (--watch reruns on change, --time)
+        \\  lispium run <file.lspm>   Run a file (--watch, --time, --profile)
         \\  lispium fmt [paths...]    Format source in place (--check for CI, --stdout to print)
         \\  lispium test [dir|files]  Run *_test.lspm files (assert-based tests)
         \\  lispium docs [name|--html] Builtin reference (terminal or static site)
@@ -560,10 +566,15 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
 }
 
 fn runFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, script_args: []const []const u8, stdout: anytype, stderr: anytype) !bool {
-    return runFileImpl(allocator, io, file_path, script_args, stdout, stderr, false);
+    return runFileImpl(allocator, io, file_path, script_args, stdout, stderr, false, false);
 }
 
-fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, script_args: []const []const u8, stdout: anytype, stderr: anytype, quiet: bool) !bool {
+/// Like runFile, but prints per-statement wall time sorted by cost.
+fn runFileProfiled(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, script_args: []const []const u8, stdout: anytype, stderr: anytype) !bool {
+    return runFileImpl(allocator, io, file_path, script_args, stdout, stderr, false, true);
+}
+
+fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, script_args: []const []const u8, stdout: anytype, stderr: anytype, quiet: bool, profile: bool) !bool {
     // Read file
     const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024 * 10)) catch |err| {
         try stderr.print("Error reading file '{s}': {}\n", .{ file_path, err });
@@ -595,6 +606,13 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
     // Process expressions, handling multi-line expressions
     var line_num: usize = 0;
     var start_line: usize = 0;
+    const ProfileEntry = struct { line: usize, text: []u8, ns: i96 };
+    var profile_entries: std.ArrayList(ProfileEntry) = .empty;
+    defer {
+        for (profile_entries.items) |e| allocator.free(e.text);
+        profile_entries.deinit(allocator);
+    }
+
     var had_error = false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     var expr_buf: std.ArrayList(u8) = .empty;
@@ -695,6 +713,7 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
             }
 
             // Evaluate
+            const eval_start = if (profile) std.Io.Timestamp.now(io, .awake).nanoseconds else 0;
             const result = evaluator.eval(expr, &env) catch |err| {
                 const err_msg = switch (err) {
                     error.UnsupportedOperator => "unsupported operator",
@@ -726,6 +745,13 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
                 allocator.destroy(result);
             }
 
+            if (profile) {
+                const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - eval_start;
+                const preview_len = @min(expr_buf.items.len, 48);
+                const text = try allocator.dupe(u8, expr_buf.items[0..preview_len]);
+                try profile_entries.append(allocator, .{ .line = start_line, .text = text, .ns = elapsed });
+            }
+
             // Statements that print for themselves aren't echoed again;
             // quiet mode (the test runner) suppresses all echoes
             const is_print_stmt = quiet or (expr.* == .list and expr.list.items.len > 0 and
@@ -750,6 +776,28 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
 
             expr_buf.clearRetainingCapacity();
             paren_depth = 0;
+        }
+    }
+
+    if (profile and profile_entries.items.len > 0) {
+        // Sort by descending cost
+        const byCost = struct {
+            fn f(_: void, a: ProfileEntry, b: ProfileEntry) bool {
+                return a.ns > b.ns;
+            }
+        }.f;
+        std.mem.sort(ProfileEntry, profile_entries.items, {}, byCost);
+        var total: i96 = 0;
+        for (profile_entries.items) |e| total += e.ns;
+        try stdout.print("\nprofile ({d} statements, {d}.{d:0>3}ms total):\n", .{
+            profile_entries.items.len,
+            @as(u64, @intCast(@max(0, @divTrunc(total, 1_000_000)))),
+            @as(u64, @intCast(@max(0, @mod(@divTrunc(total, 1000), 1000)))),
+        });
+        for (profile_entries.items) |e| {
+            const us: u64 = @intCast(@max(0, @divTrunc(e.ns, 1000)));
+            const pct: u64 = if (total > 0) @intCast(@divTrunc(e.ns * 100, total)) else 0;
+            try stdout.print("  {d: >8}us {d: >3}%  L{d: <4} {s}\n", .{ us, pct, e.line, e.text });
         }
     }
     return !had_error;
