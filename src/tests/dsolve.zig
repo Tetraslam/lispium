@@ -51,7 +51,7 @@ test "dsolve: dy/dx = 2x" {
     try testing.expect(result.* == .list);
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(= y (+ (* 2 (* 0.5 (^ x 2))) C))", str);
+    try testing.expectEqualStrings("(= y (+ (^ x 2) C))", str);
 }
 
 test "dsolve: dy/dx = constant" {

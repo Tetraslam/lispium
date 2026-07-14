@@ -800,7 +800,7 @@ test "diff: second derivative of x^3" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(* 3 (* 2 x))", str);
+    try testing.expectEqualStrings("(* 6 x)", str);
 }
 
 test "diff: third derivative of x^4" {
@@ -823,7 +823,7 @@ test "diff: third derivative of x^4" {
 
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
-    try testing.expectEqualStrings("(* 4 (* 3 (* 2 x)))", str);
+    try testing.expectEqualStrings("(* 24 x)", str);
 }
 
 test "diff: fourth derivative of x^4 is constant" {

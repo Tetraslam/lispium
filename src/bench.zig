@@ -408,11 +408,30 @@ fn getMaxTime(results: []const BenchmarkResult) u64 {
 // Pretty Output
 // ============================================================================
 
+/// Draws a single-line box sized to its content. `visible_len` is the
+/// content's display width (ANSI escapes don't count).
+fn printBox(writer: anytype, content: []const u8, visible_len: usize) !void {
+    const min_inner: usize = 62;
+    const inner = @max(min_inner, visible_len + 4);
+    const pad_total = inner - visible_len;
+    const pad_left = pad_total / 2;
+    const pad_right = pad_total - pad_left;
+
+    try writer.print("╭", .{});
+    for (0..inner) |_| try writer.print("─", .{});
+    try writer.print("╮\n│", .{});
+    for (0..pad_left) |_| try writer.print(" ", .{});
+    try writer.print("{s}", .{content});
+    for (0..pad_right) |_| try writer.print(" ", .{});
+    try writer.print("│\n╰", .{});
+    for (0..inner) |_| try writer.print("─", .{});
+    try writer.print("╯\n", .{});
+}
+
 fn printHeader(writer: anytype) !void {
     try writer.print("\n", .{});
-    try writer.print("╭──────────────────────────────────────────────────────────────╮\n", .{});
-    try writer.print("│               \x1b[1;36mLispium Benchmark Suite\x1b[0m                       │\n", .{});
-    try writer.print("╰──────────────────────────────────────────────────────────────╯\n", .{});
+    const title = "\x1b[1;36mLispium Benchmark Suite\x1b[0m";
+    try printBox(writer, title, "Lispium Benchmark Suite".len);
     try writer.print("\n", .{});
 }
 
@@ -495,30 +514,16 @@ fn printFooter(writer: anytype, results: []const BenchmarkResult, total_ns: u64)
     const fastest_name = results[fastest_idx].name;
 
     try writer.print("\n", .{});
-    try writer.print("╭──────────────────────────────────────────────────────────────╮\n", .{});
 
-    // Build the content line
+    // Build the content line; the box sizes itself to fit
     var content_buf: [200]u8 = undefined;
-    const content = std.fmt.bufPrint(&content_buf, "  {d} benchmarks | {s} total | fastest: {s} ({s})  ", .{
+    const content = std.fmt.bufPrint(&content_buf, "{d} benchmarks | {s} total | fastest: {s} ({s})", .{
         results.len,
         total_str,
         fastest_name,
         fastest_str,
-    }) catch "  benchmark results  ";
-
-    // Center the content in the box (62 chars inner width)
-    const inner_width: usize = 62;
-    const padding_total = if (inner_width > content.len) inner_width - content.len else 0;
-    const pad_left = padding_total / 2;
-    const pad_right = padding_total - pad_left;
-
-    try writer.print("│", .{});
-    for (0..pad_left) |_| try writer.print(" ", .{});
-    try writer.print("{s}", .{content});
-    for (0..pad_right) |_| try writer.print(" ", .{});
-    try writer.print("│\n", .{});
-
-    try writer.print("╰──────────────────────────────────────────────────────────────╯\n", .{});
+    }) catch "benchmark results";
+    try printBox(writer, content, content.len);
 
     // Overall comparison: geometric mean of the per-benchmark ratios
     var log_sum: f64 = 0;

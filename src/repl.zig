@@ -455,9 +455,13 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
         const input = try allocator.dupe(u8, trimmed_input);
         try session_inputs.append(allocator, input);
 
-        // Append to the persistent history file (best effort)
-        if (history_path) |hp| {
-            appendHistory(io, hp, input);
+        // Append to the persistent history file (best effort). Only
+        // interactive sessions write it: piped input and the Jupyter
+        // kernel would otherwise fill it with plumbing.
+        if (use_editor) {
+            if (history_path) |hp| {
+                appendHistory(io, hp, input);
+            }
         }
 
         var tokenizer = Tokenizer.init(input);
@@ -641,7 +645,8 @@ fn validateExpr(expr: *const Expr) PrintError!void {
     try validateExprInner(expr, &visited, 0);
 }
 
-fn printNum(n: f64, writer: anytype) !void {
+fn printNum(n_raw: f64, writer: anytype) !void {
+    const n = n_raw + 0.0; // normalizes -0.0 to 0
     if (n == @floor(n) and @abs(n) < 1e15) {
         try writer.print("{d:.0}", .{n});
     } else if (@abs(n) >= 1e15) {
@@ -924,8 +929,11 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
                 return;
             }
 
-            // Solutions list
-            if (op != null and std.mem.eql(u8, op.?, "solutions")) {
+            // Solution-set style lists: {a, b, ...}
+            if (op != null and (std.mem.eql(u8, op.?, "solutions") or
+                std.mem.eql(u8, op.?, "eigenvalues") or
+                std.mem.eql(u8, op.?, "roots")))
+            {
                 try writer.print("{{", .{});
                 for (lst.items[1..], 0..) |item, i| {
                     if (i > 0) try writer.print(", ", .{});

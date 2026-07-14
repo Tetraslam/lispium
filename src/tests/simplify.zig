@@ -234,3 +234,43 @@ test "simplify: 2x + 3x = 5x" {
     defer allocator.free(str);
     try testing.expectEqualStrings("(* 5 x)", str);
 }
+
+test "simplify: nested products flatten and fold constants" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+
+    const expr = try h.parseExpr(allocator, "(simplify (* 4 (* 3 (^ x 2))))");
+    defer {
+        expr.deinit(allocator);
+        allocator.destroy(expr);
+    }
+    const result = try h.eval(expr, &env);
+    defer {
+        result.deinit(allocator);
+        allocator.destroy(result);
+    }
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(* 12 (^ x 2))", str);
+}
+
+test "simplify: nested sums flatten and fold constants" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+
+    const expr = try h.parseExpr(allocator, "(simplify (+ 1 (+ 2 x) 3))");
+    defer {
+        expr.deinit(allocator);
+        allocator.destroy(expr);
+    }
+    const result = try h.eval(expr, &env);
+    defer {
+        result.deinit(allocator);
+        allocator.destroy(result);
+    }
+    const str = try h.exprToString(allocator, result);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("(+ 6 x)", str);
+}

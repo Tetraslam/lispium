@@ -50,7 +50,7 @@ test "gradient of x^2*y" {
     const str = try h.exprToString(allocator, result);
     defer allocator.free(str);
     // d/dx(x^2*y) = y*(2x), d/dy(x^2*y) = x^2
-    try testing.expectEqualStrings("(vector (* y (* 2 x)) (^ x 2))", str);
+    try testing.expectEqualStrings("(vector (* 2 y x) (^ x 2))", str);
 }
 
 // ============================================================================

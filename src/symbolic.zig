@@ -401,6 +401,39 @@ fn exprEqualCanonical(a: *const Expr, b: *const Expr) bool {
 }
 
 fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
+    // Flatten nested sums so constants and like terms combine across
+    // levels: (+ 1 (+ 2 x)) -> (+ 1 2 x)
+    try flattenNested(args, "+", allocator);
+
+    // Fold every numeric term into one constant, kept at the position of
+    // the first numeric term (so 1 + x + x²/2 keeps its series order)
+    if (args.items.len > 2) {
+        var total: f64 = 0;
+        var first_idx: ?usize = null;
+        var i: usize = 0;
+        while (i < args.items.len) {
+            if (args.items[i].* == .number) {
+                total += args.items[i].number;
+                const num = args.orderedRemove(i);
+                num.deinit(allocator);
+                allocator.destroy(num);
+                if (first_idx == null) first_idx = i;
+            } else {
+                i += 1;
+            }
+        }
+        if (first_idx) |idx| {
+            if (args.items.len == 0) {
+                args.deinit(allocator);
+                return try makeNumber(allocator, total);
+            }
+            if (total != 0) {
+                const c = try makeNumber(allocator, total);
+                try args.insert(allocator, @min(idx, args.items.len), c);
+            }
+        }
+    }
+
     // Combine like terms with coefficients: 2x + 3x -> 5x
     // Use a fixed-point approach: keep combining until no more changes occur
     if (args.items.len >= 2) {
@@ -518,7 +551,79 @@ fn simplifyAddition(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) S
 }
 
 /// Takes ownership of args and returns the simplified result.
+/// Splices the operands of nested same-op lists into `args` in place:
+/// (* a (* b c)) becomes (* a b c). The nested shells are freed; their
+/// children move into args. Runs to a fixed point (already-simplified
+/// children can still be nested one level deep).
+fn flattenNested(args: *std.ArrayList(*Expr), op: []const u8, allocator: std.mem.Allocator) SimplifyError!void {
+    var i: usize = 0;
+    while (i < args.items.len) {
+        const arg = args.items[i];
+        const is_nested = arg.* == .list and arg.list.items.len > 1 and
+            arg.list.items[0].* == .symbol and std.mem.eql(u8, arg.list.items[0].symbol, op);
+        if (!is_nested) {
+            i += 1;
+            continue;
+        }
+        // Move the children out, then free the shell (head + list storage)
+        const inner = arg.list.items;
+        _ = args.orderedRemove(i);
+        for (inner[1..], 0..) |child, k| {
+            args.insert(allocator, i + k, child) catch |err| {
+                // Roll the children into a leaked-safe state: free them
+                // and the shell, then propagate
+                for (inner[1 + k ..]) |c| {
+                    c.deinit(allocator);
+                    allocator.destroy(c);
+                }
+                inner[0].deinit(allocator);
+                allocator.destroy(inner[0]);
+                arg.list.deinit(allocator);
+                allocator.destroy(arg);
+                return err;
+            };
+        }
+        inner[0].deinit(allocator);
+        allocator.destroy(inner[0]);
+        arg.list.deinit(allocator);
+        allocator.destroy(arg);
+        // Don't advance: the spliced items may be nested themselves
+    }
+}
+
 fn simplifyMultiplication(args: *std.ArrayList(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
+    // Flatten nested products so constants and like bases can combine
+    // across levels: (* 4 (* 3 x)) -> (* 4 3 x)
+    try flattenNested(args, "*", allocator);
+
+    // Fold every numeric factor into a single leading coefficient
+    if (args.items.len > 2) {
+        var coeff: f64 = 1;
+        var removed_any = false;
+        var i: usize = 0;
+        while (i < args.items.len) {
+            if (args.items[i].* == .number) {
+                coeff *= args.items[i].number;
+                const num = args.orderedRemove(i);
+                num.deinit(allocator);
+                allocator.destroy(num);
+                removed_any = true;
+            } else {
+                i += 1;
+            }
+        }
+        if (removed_any) {
+            if (args.items.len == 0) {
+                args.deinit(allocator);
+                return try makeNumber(allocator, coeff);
+            }
+            if (coeff != 1) {
+                const c = try makeNumber(allocator, coeff);
+                try args.insert(allocator, 0, c);
+            }
+        }
+    }
+
     // Any zero factor annihilates the product (any arity)
     for (args.items) |arg| {
         if (arg.* == .number and arg.number == 0) {
