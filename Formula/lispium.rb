@@ -11,7 +11,7 @@ class Lispium < Formula
     end
     on_intel do
       url "https://github.com/Tetraslam/lispium/releases/download/v0.16.0/lispium-macos-x86_64.tar.gz"
-      sha256 "ca9c2cee6bb05011891e4b127f12d0bd2b8f6c05e04431e20a871b59ba8978e7"
+      sha256 "2bf48ef1c665c71082cd6ed14a11ae5a50bcdb39c7ba79b02d27b2f93060f0db"
     end
   end
 
@@ -22,7 +22,7 @@ class Lispium < Formula
     end
     on_intel do
       url "https://github.com/Tetraslam/lispium/releases/download/v0.16.0/lispium-linux-x86_64.tar.gz"
-      sha256 "e277d9813df842e236cc46dcad66cf9f984f1e6a3a5fa457441439c9f2ea61c2"
+      sha256 "66e191b13e83550c6b17e8e6fe840d165e8d7dce113e3b513890e09b0a7276eb"
     end
   end
 
