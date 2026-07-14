@@ -24,8 +24,10 @@ documentation.
 Evaluate one or more expressions (\fB-\fR reads from standard input).
 Exits nonzero on error.
 .TP
-.B run \fR[\fB--watch\fR] [\fB--time\fR] \fIfile.lspm\fR [\fIargs\fR...]
-Run a source file. \fB--watch\fR reruns on change; \fB--time\fR reports the
+.B run \fR[\fB--watch\fR] [\fB--time\fR] [\fB--interactive\fR] \fIfile.lspm\fR [\fIargs\fR...]
+Run a source file. \fB--watch\fR reruns on change; \fB--interactive\fR (or
+\fB-i\fR) evaluates the file and then opens a REPL with every definition
+still bound; \fB--time\fR reports the
 total wall time; extra arguments are available via \fB(args)\fR. Files may
 start with \fB#!/usr/bin/env -S lispium run\fR.
 .TP

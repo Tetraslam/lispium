@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0] - 2026-07-13
+
+### Added
+- `lispium run <file> --interactive` (or `-i`): evaluate the file, then
+  open a REPL with every definition still bound — load an example, then
+  poke at its functions by hand. The flag reads naturally before or
+  after the file path.
+
 ## [0.13.0] - 2026-07-13
 
 The dogfood release: four long example programs written in Lispium

@@ -94,10 +94,14 @@ fn mainImpl(init: std.process.Init) !void {
             var watch = false;
             var timed = false;
             var profile = false;
+            var interactive = false;
             var script_args: std.ArrayList([]const u8) = .empty;
             defer script_args.deinit(allocator);
             while (args_it.next()) |a| {
-                if (file_path == null and std.mem.eql(u8, a, "--watch")) {
+                // --interactive reads naturally after the file too
+                if (std.mem.eql(u8, a, "--interactive") or std.mem.eql(u8, a, "-i")) {
+                    interactive = true;
+                } else if (file_path == null and std.mem.eql(u8, a, "--watch")) {
                     watch = true;
                 } else if (file_path == null and std.mem.eql(u8, a, "--time")) {
                     timed = true;
@@ -110,9 +114,19 @@ fn mainImpl(init: std.process.Init) !void {
                 }
             }
             const path = file_path orelse {
-                try stderr.print("Usage: lispium run [--watch] [--time] <file.lspm> [args...]\n", .{});
+                try stderr.print("Usage: lispium run [--watch] [--time] [--profile] [--interactive] <file.lspm> [args...]\n", .{});
                 return;
             };
+
+            if (interactive) {
+                // Evaluate the file into a fresh session, then hand the
+                // prompt over with every definition still bound
+                const home = init.minimal.environ.getAlloc(allocator, "HOME") catch
+                    init.minimal.environ.getAlloc(allocator, "USERPROFILE") catch null;
+                defer if (home) |h| allocator.free(h);
+                try repl.runWithFile(allocator, io, path, home);
+                return;
+            }
 
             if (watch) {
                 try watchFile(allocator, io, path, script_args.items, stdout, stderr);
@@ -479,7 +493,7 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  lispium repl [file.lspm]  Start interactive REPL (optionally preloading a file)
         \\  lispium eval "<expr>"     Evaluate a single expression
-        \\  lispium run <file.lspm>   Run a file (--watch, --time, --profile)
+        \\  lispium run <file.lspm>   Run a file (--watch, --time, --profile, --interactive)
         \\  lispium fmt [paths...]    Format source in place (--check for CI, --stdout to print)
         \\  lispium test [dir|files]  Run *_test.lspm files (assert-based tests)
         \\  lispium docs [name|--html] Builtin reference (terminal or static site)

@@ -53,7 +53,7 @@ The [cookbook](cookbook/) has runnable examples for every area, and errors point
 
 ## Tooling
 
-- `lispium run file.lspm` (`--watch`, `--time`, `--profile`), `lispium test`, `lispium fmt`
+- `lispium run file.lspm` (`--watch`, `--time`, `--profile`, `--interactive`), `lispium test`, `lispium fmt`
 - REPL with line editing, persistent history, `?func` inline docs
 - LSP (`lispium lsp`): hover, completion, diagnostics, rename — powers the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=tetraslam.lispium)
 - Jupyter kernel: `uv tool install 'lispium[jupyter]'`, then `python -m lispium.kernel install`
