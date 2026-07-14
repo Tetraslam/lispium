@@ -21,8 +21,6 @@
 ; or:  ... --interactive, then (analyze 100 0.1 0.0001) etc.
 ; ============================================================================
 
-(define (>= a b) (or (> a b) (= a b)))
-(define (<= a b) (or (< a b) (= a b)))
 (define pi2 (evalf (* 2 pi)))
 
 ; ----------------------------------------------------------------------------
@@ -208,6 +206,36 @@
 ; ----------------------------------------------------------------------------
 ; Demo
 ; ----------------------------------------------------------------------------
+
+; Analysis as data: the full report exports as JSON for other tools
+(define (analysis-dict r l c)
+  (dict 'R
+        r
+        'L
+        l
+        'C
+        c
+        'omega0
+        (omega0 l c)
+        'zeta
+        (zeta r l c)
+        'Q
+        (q-factor r l c)
+        'damping
+        (symbol->string (damping-class r l c))
+        'peak
+        (peak-response r l c)))
+
+(define report-path "/tmp/lispium-rlc-report.json")
+(write-file report-path
+            (json-emit (list (analysis-dict r1 l1 c1)
+                             (analysis-dict rc-crit l1 c1)
+                             (analysis-dict 2000 l1 c1))))
+(assert (= (dict-get (nth (json-parse (read-file report-path)) 0) "damping")
+           "underdamped")
+        "the JSON report round-trips")
+(print "report written to" report-path)
+(print "")
 
 (analyze r1 l1 c1)
 (print "")

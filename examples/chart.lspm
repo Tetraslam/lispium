@@ -26,27 +26,30 @@
       (read-numbers (if (number? v) (cons v acc) acc)))))
 
 ; ----------------------------------------------------------------------------
-; Statistics (wrapping the variadic builtins for list input)
+; Statistics as a dict (wrapping the variadic builtins for list input)
 ; ----------------------------------------------------------------------------
 
 (define (stats xs)
-  (list (list 'count (length xs))
-        (list 'min (apply min xs))
-        (list 'max (apply max xs))
-        (list 'mean (apply mean xs))
-        (list 'median (apply median xs))
-        (list 'stddev (apply stddev xs))))
+  (dict 'count
+        (length xs)
+        'min
+        (apply min xs)
+        'max
+        (apply max xs)
+        'mean
+        (apply mean xs)
+        'median
+        (apply median xs)
+        'stddev
+        (apply stddev xs)))
 
-(define (stat s key) (nth (assoc key s) 1))
+(define (stat s key) (dict-get s key))
 
 (define (print-stats s)
   (begin
-    (print "  count " (stat s 'count))
-    (print "  min    " (stat s 'min))
-    (print "  max    " (stat s 'max))
-    (print "  mean   " (stat s 'mean))
-    (print "  median " (stat s 'median))
-    (print "  stddev " (stat s 'stddev))))
+    (map (lambda (key) (print " " key ":" (dict-get s key)))
+         (list "count" "min" "max" "mean" "median" "stddev"))
+    'ok))
 
 ; ----------------------------------------------------------------------------
 ; Histogram binning
@@ -71,8 +74,6 @@
 ; ----------------------------------------------------------------------------
 ; Rendering
 ; ----------------------------------------------------------------------------
-
-(define (repeat-str s n) (if (< n 1) "" (concat s (repeat-str s (- n 1)))))
 
 (define (fmt2 x) (evalf (/ (round (evalf (* x 100))) 100)))
 
@@ -120,7 +121,15 @@
             (svg-points (cdr xs) (+ i 1) n lo span w h))))
 
 ; ----------------------------------------------------------------------------
-; Argument parsing: --bins N, --svg
+; CSV input: column N of a file, skipping a non-numeric header row
+; ----------------------------------------------------------------------------
+
+(define (csv-column path col)
+  (filter number?
+          (map (lambda (row) (nth row col)) (csv-parse (read-file path)))))
+
+; ----------------------------------------------------------------------------
+; Argument parsing: --bins N, --svg, --out FILE, --csv FILE, --col N
 ; ----------------------------------------------------------------------------
 
 (define (flag-value flags name default)
@@ -132,6 +141,14 @@
 
 (define (has-flag? flags name)
   (if (null? flags) 0 (if (= (car flags) name) 1 (has-flag? (cdr flags) name))))
+
+; Like flag-value but returns the raw string (for file paths)
+(define (flag-string flags name default)
+  (if (null? flags)
+    default
+    (if (= (car flags) name)
+      (if (null? (cdr flags)) default (nth flags 1))
+      (flag-string (cdr flags) name default))))
 
 ; ----------------------------------------------------------------------------
 ; Test suite (fixed data, no stdin involved)
@@ -164,6 +181,19 @@
 (assert (= (flag-value '("--svg") "--bins" 10) 10) "--bins default")
 (assert (has-flag? '("--svg") "--svg") "--svg detected")
 (assert (not (has-flag? '() "--svg")) "no flags, no --svg")
+(assert (= (flag-string '("--csv" "d.csv") "--csv" "") "d.csv")
+        "--csv path parsed")
+
+; Stats are a dict now
+(assert (dict? s) "stats returns a dict")
+(assert (= (dict-get s 'stddev) 2) "dict access by symbol key")
+
+; CSV input: write a file with write-file, read a column back
+(write-file "/tmp/lispium-chart-test.csv" "label,value\na,1\nb,2\nc,3\n")
+(assert (= (csv-column "/tmp/lispium-chart-test.csv" 1) (list 1 2 3))
+        "csv-column extracts the numeric column, skipping the header")
+(assert (= (stat (stats (csv-column "/tmp/lispium-chart-test.csv" 1)) 'mean) 2)
+        "stats over a csv column")
 
 ; SVG output is well-formed enough to open
 (assert (> (length (svg-chart test-data 200 100)) 100) "svg has content")
@@ -176,16 +206,26 @@
 ; ----------------------------------------------------------------------------
 
 (begin
-  (define input (read-numbers '()))
+  (define flags (args))
+  (define csv-path (flag-string flags "--csv" ""))
+  (define input
+    (if (> (length csv-path) 0)
+      (csv-column csv-path (flag-value flags "--col" 0))
+      (read-numbers '())))
   (define data
     (if (null? input) '(3 1 4 1 5 9 2 6 5 3 5 8 9 7 9 3 2 3 8 4) input))
-  (define flags (args))
-  (if (null? input)
-    (print "(no piped input; charting the demo dataset - digits of pi)")
-    (print "(read" (length input) "numbers from stdin)"))
+  (cond
+    ((> (length csv-path) 0)
+      (print "(read" (length input) "numbers from" csv-path ")"))
+    ((null? input)
+      (print "(no piped input; charting the demo dataset - digits of pi)"))
+    (else (print "(read" (length input) "numbers from stdin)")))
   (print "")
   (if (has-flag? flags "--svg")
-    (print (svg-chart data 400 160))
+    (let ((svg (svg-chart data 400 160)) (out (flag-string flags "--out" "")))
+      (if (> (length out) 0)
+        (begin (write-file out svg) (print "wrote" out))
+        (print svg)))
     (begin
       (print-stats (stats data))
       (print "")

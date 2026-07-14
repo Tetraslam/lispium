@@ -21,9 +21,6 @@
 ; or:  lispium run examples/dice.lspm --interactive to play with it
 ; ============================================================================
 
-(define (>= a b) (or (> a b) (= a b)))
-(define (<= a b) (or (< a b) (= a b)))
-
 ; ----------------------------------------------------------------------------
 ; Distributions: sorted alists of (value probability)
 ; ----------------------------------------------------------------------------
@@ -107,7 +104,7 @@
 ; Display
 ; ----------------------------------------------------------------------------
 
-(define (repeat-str s n) (if (= n 0) "" (concat s (repeat-str s (- n 1)))))
+; repeat-str comes from the prelude
 
 (define (histogram d)
   ; min/max don't take exact rationals, so bar math happens in floats

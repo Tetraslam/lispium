@@ -20,15 +20,9 @@
 ; Small list helpers
 ; ----------------------------------------------------------------------------
 
-(define (zip a b)
-  (if (or (null? a) (null? b))
-    '()
-    (cons (list (car a) (car b)) (zip (cdr a) (cdr b)))))
-
-(define (sum xs) (reduce + 0 xs))
-
+; zip and sum-list come from the prelude
 (define (dot-lists xs ys)
-  (sum (map (lambda (p) (* (car p) (nth p 1))) (zip xs ys))))
+  (sum-list (map (lambda (p) (* (car p) (nth p 1))) (zip xs ys))))
 
 ; ----------------------------------------------------------------------------
 ; The network
@@ -96,9 +90,9 @@
       (train (train-epoch net samples lr) samples lr (- epochs 1) report))))
 
 (define (total-loss net samples)
-  (sum (map (lambda (s)
-              (let ((err (- (nth s 1) (predict net (car s))))) (* err err)))
-            samples)))
+  (sum-list (map (lambda (s)
+                   (let ((err (- (nth s 1) (predict net (car s))))) (* err err)))
+                 samples)))
 
 ; ----------------------------------------------------------------------------
 ; XOR
@@ -137,5 +131,25 @@
 (assert (< (total-loss trained xor-samples) 0.02) "final loss under 0.02")
 (assert (> (total-loss initial-net xor-samples) 0.9) "initial loss near 1")
 
+; ----------------------------------------------------------------------------
+; Model persistence: a network is nested lists, which is exactly JSON.
+; Train once, save, and any later run can load and predict instantly.
+; ----------------------------------------------------------------------------
+
+(define weights-path "/tmp/lispium-xor-weights.json")
+(write-file weights-path (json-emit trained))
+(define reloaded (json-parse (read-file weights-path)))
+
+(assert (> (predict reloaded '(0 1)) 0.9)
+        "a JSON round-tripped model predicts identically")
+(assert (< (abs (- (predict reloaded '(1 1)) (predict trained '(1 1)))) 1e-12)
+        "... bit for bit")
+
+(print "")
+(print "model saved to"
+       weights-path
+       "("
+       (length (json-emit trained))
+       "bytes of JSON )")
 (print "")
 (print "all neural network tests passed")

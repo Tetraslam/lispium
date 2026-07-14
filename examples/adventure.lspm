@@ -10,9 +10,12 @@
 ; 
 ; Playing it:
 ; lispium run examples/adventure.lspm        starts the game on a TTY
-; commands are s-expressions, one per line:
-; look            (go north)      (take lantern)
-; inventory       (drop lantern)  quit / help
+; Commands are plain English, one per line:
+; look        go east        take lantern
+; inventory   drop lantern   quit / help
+; (read-line delivers the raw line; a tiny parser maps words to engine
+; commands. This game predates read-line and needed parenthesized
+; commands -- that pain is why the builtin exists.)
 ; 
 ; Piped/CI runs hit end-of-input immediately, so the scripted walkthrough
 ; test suite below is what keeps the game honest.
@@ -21,8 +24,6 @@
 ; entrance hall. You'll need light for the underground, and a key for
 ; the vault door.
 ; ============================================================================
-
-(define (>= a b) (or (> a b) (= a b)))
 
 ; ----------------------------------------------------------------------------
 ; The DSL: defroom expands into a registration onto the `rooms` alist
@@ -98,9 +99,6 @@
 (define (items-here st) (nth (assoc (st-room st) (st-locs st)) 1))
 
 (define (holding? st item) (member? (st-inv st) item))
-
-(define (member? xs x)
-  (if (null? xs) 0 (if (= (car xs) x) 1 (member? (cdr xs) x))))
 
 (define (remove-one xs x)
   (if (null? xs)
@@ -212,11 +210,10 @@
     ((= cmd 'inventory) (cmd-inventory st))
     ((= cmd 'i) (cmd-inventory st))
     ((= cmd 'help) (list st help-text))
-    ; Bare verbs that needed parens get a pointed hint, not just help:
-    ; (read) parses one expression, so "go east" arrives as just `go`
-    ((= cmd 'go) (list st (paren-hint 'go "(go east)")))
-    ((= cmd 'take) (list st (paren-hint 'take "(take lantern)")))
-    ((= cmd 'drop) (list st (paren-hint 'drop "(drop lantern)")))
+    ; A bare verb without its target gets a pointed hint
+    ((= cmd 'go) (list st "Go where? (e.g. \"go east\")"))
+    ((= cmd 'take) (list st "Take what? (e.g. \"take lantern\")"))
+    ((= cmd 'drop) (list st "Drop what?"))
     ((list? cmd)
       (cond
         ((= (car cmd) 'go) (cmd-go st (nth cmd 1)))
@@ -229,6 +226,18 @@
 ; The interactive loop
 ; ----------------------------------------------------------------------------
 
+; Turns a typed line into an engine command: verbs with targets become
+; (verb target) lists, bare verbs stay symbols. Unknown text becomes
+; (unknown), which do-command answers with the help line.
+(define (parse-command line)
+  (let ((cmd-words (filter (lambda (w) (> (length w) 0))
+                           (split (downcase (trim line)) " "))))
+    (cond
+      ((null? cmd-words) 'blank)
+      ((= (length cmd-words) 1) (string->symbol (first cmd-words)))
+      (else (list (string->symbol (first cmd-words))
+                  (string->symbol (second cmd-words)))))))
+
 (define (play)
   (begin
     (print "== THE AMULET OF LISPIUM ==")
@@ -238,16 +247,19 @@
     (game-loop (initial-state))))
 
 (define (game-loop st)
-  (let ((cmd (read)))
-    (cond
-      ((= cmd 'eof) (print "(end of input)"))
-      ((= cmd 'quit) (print "Farewell."))
-      (else (let ((next (do-command st cmd)))
-              (begin
-                (print (nth next 1))
-                (if (st-won (car next))
-                  (print "\nThe amulet hums as sunlight touches it. YOU WIN.")
-                  (game-loop (car next)))))))))
+  (let ((line (read-line)))
+    (if (= line 'eof)
+      (print "(end of input)")
+      (let ((cmd (parse-command line)))
+        (cond
+          ((= cmd 'blank) (game-loop st))
+          ((= cmd 'quit) (print "Farewell."))
+          (else (let ((next (do-command st cmd)))
+                  (begin
+                    (print (nth next 1))
+                    (if (st-won (car next))
+                      (print "\nThe amulet hums as sunlight touches it. YOU WIN.")
+                      (game-loop (car next)))))))))))
 
 ; ----------------------------------------------------------------------------
 ; Scripted walkthrough test suite
@@ -326,6 +338,14 @@
         "inventory lists items")
 (assert (= (msg-of s0 'inventory) "You are empty-handed.")
         "empty inventory message")
+
+; The natural-language parser (needs string->symbol + read-line era)
+(assert (= (parse-command "go east") '(go east))
+        "two words parse to (verb target)")
+(assert (= (parse-command "  LOOK  ") 'look) "case and whitespace are forgiven")
+(assert (= (parse-command "take lantern") (list 'take 'lantern)) "take parses")
+(assert (= (parse-command "") 'blank) "empty line is a no-op")
+(assert (= (parse-command "go") 'go) "bare verb stays bare (engine hints)")
 
 (print "all adventure engine tests passed")
 (print "")

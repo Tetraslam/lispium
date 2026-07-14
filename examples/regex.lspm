@@ -29,9 +29,6 @@
 ; Character helpers (strings all the way down)
 ; ----------------------------------------------------------------------------
 
-; Lispium ships < > = as builtins; >= is derived
-(define (>= a b) (or (> a b) (= a b)))
-
 (define (char-at s i) (substring s i (+ i 1)))
 
 ; ----------------------------------------------------------------------------
@@ -117,8 +114,8 @@
 ; Matcher: AST x position set -> position set
 ; ----------------------------------------------------------------------------
 
-(define (set-member? xs x)
-  (if (null? xs) 0 (if (= (car xs) x) 1 (set-member? (cdr xs) x))))
+; set membership is the prelude's member?
+(define set-member? member?)
 
 (define (set-add xs x) (if (set-member? xs x) xs (cons x xs)))
 
