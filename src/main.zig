@@ -526,6 +526,8 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
     // Wire (print), (read), and (load) to the process stdio and io
     env.out = stdout;
     env.io = io;
+    env.allow_net = true;
+    env.allow_exec = true;
     var stdin_buffer: [64 * 1024]u8 = undefined;
     var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
     env.in = &stdin_reader.interface;
@@ -578,6 +580,7 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
         }
 
         // Evaluate
+        builtins.clearErrorMessage();
         evaluator.setPositionMap(&positions);
         const result = evaluator.eval(expr, &env) catch |err| {
             const err_msg = switch (err) {
@@ -594,11 +597,13 @@ fn evalExpression(allocator: std.mem.Allocator, io: std.Io, input: []const u8, s
                 error.Undefined => "result is mathematically undefined at this point",
             };
             const ctx = evaluator.takeErrorContext();
+            const user_msg = builtins.takeErrorMessage();
+            const shown = if (user_msg.len > 0) user_msg else err_msg;
             try printInlineLocation(stderr, "Eval error", input, evaluator.takeErrorPosition());
             if (ctx.len > 0) {
-                try stderr.print("{s} (in '{s}')\n", .{ err_msg, ctx });
+                try stderr.print("{s} (in '{s}')\n", .{ shown, ctx });
             } else {
-                try stderr.print("{s}\n", .{err_msg});
+                try stderr.print("{s}\n", .{shown});
             }
             try printCallStack(stderr);
             return false;
@@ -648,6 +653,8 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
     // Wire (print), (read), and (load) to the process stdio and io
     env.out = stdout;
     env.io = io;
+    env.allow_net = true;
+    env.allow_exec = true;
     env.script_args = script_args;
     var stdin_buffer: [64 * 1024]u8 = undefined;
     var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
@@ -789,6 +796,7 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
                 }
 
                 // Evaluate
+                builtins.clearErrorMessage();
                 evaluator.setPositionMap(&positions);
                 const eval_start = if (profile) std.Io.Timestamp.now(io, .awake).nanoseconds else 0;
                 const result = evaluator.eval(expr, &env) catch |err| {
@@ -806,11 +814,13 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
                         error.Undefined => "result is mathematically undefined at this point",
                     };
                     const ctx = evaluator.takeErrorContext();
+                    const user_msg = builtins.takeErrorMessage();
+                    const shown = if (user_msg.len > 0) user_msg else err_msg;
                     try printErrorLocation(stderr, file_path, start_line, stable_input, evaluator.takeErrorPosition());
                     if (ctx.len > 0) {
-                        try stderr.print(": Eval error: {s} (in '{s}')\n", .{ err_msg, ctx });
+                        try stderr.print(": Eval error: {s} (in '{s}')\n", .{ shown, ctx });
                     } else {
-                        try stderr.print(": Eval error: {s}\n", .{err_msg});
+                        try stderr.print(": Eval error: {s}\n", .{shown});
                     }
                     try printCallStack(stderr);
                     had_error = true;
@@ -1027,6 +1037,15 @@ fn printCallStack(writer: anytype) !void {
 fn printExprSimple(expr: *const Expr, writer: anytype) !void {
     switch (expr.*) {
         .big => |b| try builtins.writeBig(b, writer),
+        .dict => |d| {
+            try writer.print("(dict", .{});
+            var dict_it = d.map.iterator();
+            while (dict_it.next()) |entry| {
+                try writer.print(" \"{s}\" ", .{entry.key_ptr.*});
+                try printExprSimple(entry.value_ptr.*, writer);
+            }
+            try writer.print(")", .{});
+        },
         .number => |n| {
             if (@abs(n - @round(n)) < 1e-10 and @abs(n) < 1e15) {
                 try writer.print("{d}", .{@as(i64, @intFromFloat(@round(n)))});

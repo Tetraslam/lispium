@@ -37,6 +37,8 @@ zig build -Doptimize=ReleaseSafe  # Build optimized release binary
 
 Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with **zero external dependencies**. The codebase totals roughly 18,000 lines across all modules.
 
+**Design principle:** Lispium computes over values and emits documents; it never hosts processes. File/JSON/HTTP-style capabilities that consume or produce values are in character (wired into `Env` by the host, politely absent in WASM/tests); servers, GUIs, audio, threads, and FFI are out, permanently. When judging a proposed capability, ask: does it transform values, or does it create a process that lives in time?
+
 ### Data Flow Pipeline
 
 ```
@@ -280,6 +282,7 @@ The `Expr` tagged union is the fundamental data structure:
 pub const Expr = union(enum) {
     number: f64,                        // Numeric literals
     big: Big,                           // Arbitrary-precision integers (owned limbs)
+    dict: Dict,                         // Insertion-ordered string-keyed hashmap (owned)
     symbol: []const u8,                 // Variable/function names (NOT owned)
     owned_symbol: []const u8,           // Dynamically allocated strings (owned, freed on deinit)
     list: std.ArrayList(*Expr),         // S-expressions: (op arg1 arg2 ...)
@@ -420,8 +423,11 @@ return result;
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `=` | `(= a b ...)` | Equality (variadic; returns 1 or 0) |
+| `!=` | `(!= a b ...)` | True when the arguments are not all equal |
 | `<` | `(< a b ...)` | Chained less-than; symbolic args stay inert |
 | `>` | `(> a b ...)` | Chained greater-than; symbolic args stay inert |
+| `<=` | `(<= a b ...)` | Chained less-or-equal; symbolic args stay inert |
+| `>=` | `(>= a b ...)` | Chained greater-or-equal; symbolic args stay inert |
 
 ### Boolean Logic (5 functions)
 
@@ -774,6 +780,67 @@ Results demote back to plain numbers when they fit exactly.
 | `string->number` | `(string->number s)` | Parse a number or `p/q` rational |
 | `number->string` | `(number->string x)` | Render any expression |
 | `length` | `(length s)` | Byte length (also works on lists) |
+
+### More Strings (11 functions)
+
+`read-line` (raw input line as string; `eof` at end) · `string->symbol` ·
+`symbol->string` · `index-of` (or -1) · `contains?` · `replace` ·
+`upcase` · `downcase` · `trim` · `char->code` · `code->char`
+
+### Files (3 functions)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `read-file` | `(read-file path)` | Whole file as a string (10 MB cap) |
+| `write-file` | `(write-file path s)` | Write (replace) a file; returns 1 |
+| `load` | `(load "f.lspm")` | Evaluate a file in the current env |
+
+### Dictionaries (10 functions)
+
+Real hashmaps (`Expr.dict`, insertion-ordered, string keys; symbol and
+integer keys stringify). IMMUTABLE: `dict-set`/`dict-remove`/`dict-merge`
+return new dicts. The REPL prints `{k: v}`; plain output prints the
+round-trippable `(dict "k" v ...)`. `=` compares order-insensitively.
+Empty dicts are falsy.
+
+`dict` `dict-get` (with optional default) `dict-has?` `dict-set`
+`dict-remove` `dict-keys` `dict-values` `dict-size` `dict-merge` `dict?`
+
+### JSON and CSV (4 functions)
+
+`json-parse` / `json-emit`: objects <-> dicts, arrays <-> lists,
+true/false <-> 1/0, null <-> the symbol `null`. `csv-parse` (numeric
+cells auto-convert, quoted cells handled) / `csv-emit`.
+
+### Time (3 functions)
+
+`(now)` Unix seconds (UTC, needs env.io) · `(date-parts ts)` dict of
+year/month/day/hour/minute/second/weekday · `(date-format ts)` ISO-ish
+"YYYY-MM-DD HH:MM:SS". UTC only, by design.
+
+### Inspectable Errors
+
+`(error msg...)` and failed `(assert ...)` record their message instead
+of printing; the CLI prints it only when nothing catches the error, and
+a `try` fallback can read it with `(error-message)`.
+
+### Capability Ports (2 functions)
+
+Gated by `Env.allow_net` / `Env.allow_exec` (CLI on; WASM/tests/LSP off,
+failing politely with a readable error-message):
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `http-get` | `(http-get url)` | Fetch a URL: `{status body}` dict |
+| `exec` | `(exec cmd)` | Shell command: `{status stdout stderr}` dict (10 MB output cap) |
+
+### The Prelude (src/prelude.lspm)
+
+A stdlib written in Lispium, embedded via `@embedFile`, evaluated into
+every environment by `registry.installBuiltins`. All names shadowable.
+Includes: `first second third last empty? take drop zip flatten repeat
+member? any? all? count-if sum-list product-list max-by min-by join
+repeat-str identity compose inc dec`.
 
 ### Type Predicates (9 functions)
 

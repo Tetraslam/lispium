@@ -1,0 +1,96 @@
+; ============================================================================
+; The Lispium prelude: a small standard library written in Lispium itself,
+; embedded in the binary and loaded into every environment. Everything
+; here is ordinary code — user definitions shadow it freely.
+;
+; These are the helpers that every real program was re-defining by hand
+; (see examples/): list utilities, folds, and function combinators.
+; ============================================================================
+
+; --- list access -------------------------------------------------------------
+
+(define (first xs) (car xs))
+(define (second xs) (nth xs 1))
+(define (third xs) (nth xs 2))
+
+(define (last xs)
+  (if (null? (cdr xs)) (car xs) (last (cdr xs))))
+
+(define (empty? xs) (null? xs))
+
+; --- list building -----------------------------------------------------------
+
+(define (take xs n)
+  (if (or (= n 0) (null? xs))
+      '()
+      (cons (car xs) (take (cdr xs) (- n 1)))))
+
+(define (drop xs n)
+  (if (or (= n 0) (null? xs))
+      xs
+      (drop (cdr xs) (- n 1))))
+
+(define (zip a b)
+  (if (or (null? a) (null? b))
+      '()
+      (cons (list (car a) (car b)) (zip (cdr a) (cdr b)))))
+
+(define (flatten xs)
+  (cond
+    ((null? xs) '())
+    ((list? (car xs)) (append (flatten (car xs)) (flatten (cdr xs))))
+    (else (cons (car xs) (flatten (cdr xs))))))
+
+(define (repeat x n)
+  (if (< n 1) '() (cons x (repeat x (- n 1)))))
+
+; --- searching and predicates ------------------------------------------------
+
+(define (member? xs x)
+  (if (null? xs)
+      0
+      (if (= (car xs) x) 1 (member? (cdr xs) x))))
+
+(define (any? pred xs)
+  (if (null? xs)
+      0
+      (if (pred (car xs)) 1 (any? pred (cdr xs)))))
+
+(define (all? pred xs)
+  (if (null? xs)
+      1
+      (if (pred (car xs)) (all? pred (cdr xs)) 0)))
+
+(define (count-if pred xs)
+  (length (filter pred xs)))
+
+; --- folds over numbers ------------------------------------------------------
+
+(define (sum-list xs) (reduce + 0 xs))
+(define (product-list xs) (reduce * 1 xs))
+
+(define (max-by f xs)
+  (reduce (lambda (best x) (if (> (f x) (f best)) x best)) (car xs) (cdr xs)))
+
+(define (min-by f xs)
+  (reduce (lambda (best x) (if (< (f x) (f best)) x best)) (car xs) (cdr xs)))
+
+; --- strings -----------------------------------------------------------------
+
+(define (join sep xs)
+  (cond
+    ((null? xs) "")
+    ((null? (cdr xs)) (concat "" (car xs)))
+    (else (concat (car xs) sep (join sep (cdr xs))))))
+
+(define (repeat-str s n)
+  (if (< n 1) "" (concat s (repeat-str s (- n 1)))))
+
+; --- function combinators ----------------------------------------------------
+
+(define (identity x) x)
+
+(define (compose f g) (lambda (x) (f (g x))))
+
+(define (inc x) (+ x 1))
+(define (dec x) (- x 1))

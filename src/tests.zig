@@ -49,6 +49,7 @@ comptime {
     _ = @import("tests/positions.zig");
     _ = @import("pool.zig");
     _ = @import("tests/dispatch.zig");
+    _ = @import("tests/batteries.zig");
 }
 
 // Re-export helpers for any external use

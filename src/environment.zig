@@ -42,6 +42,12 @@ pub const Env = struct {
     io: ?std.Io = null,
     /// Command-line arguments after the script path, for (args)
     script_args: []const []const u8 = &.{},
+    /// Capability ports: hosts opt in explicitly. The CLI enables both;
+    /// WASM, tests, and the LSP leave them off, and the builtins fail
+    /// politely. (Design rule: values in, documents out — these ports
+    /// fetch/produce values, they never host processes.)
+    allow_net: bool = false,
+    allow_exec: bool = false,
     /// User-defined macros: name -> lambda whose body is a template
     macros: ?std.StringHashMap(*Expr) = null,
     /// Function names being traced by (trace name)

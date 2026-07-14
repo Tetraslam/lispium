@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.16.0] - 2026-07-14
+
+The batteries release. Design rule, now written down: Lispium computes
+over values and emits documents; it never hosts processes.
+
+### Added
+- **The prelude**: a standard library written in Lispium itself, embedded
+  in the binary and loaded into every environment (first/second/third,
+  take/drop/zip/flatten, member?/any?/all?, sum-list, max-by/min-by,
+  join/repeat-str, compose/inc/dec). Every name is shadowable.
+- **Dictionaries**: a real hashmap value type. Insertion-ordered, string
+  keys (symbols and integers stringify), immutable (dict-set returns a
+  new dict), order-insensitive `=`, `{k: v}` pretty-printing. dict,
+  dict-get (with default), dict-has?, dict-set, dict-remove, dict-keys,
+  dict-values, dict-size, dict-merge, dict?.
+- **JSON and CSV**: json-parse / json-emit (objects <-> dicts, arrays <->
+  lists, true/false <-> 1/0, null <-> 'null) and csv-parse / csv-emit
+  (quoted cells, numeric auto-conversion).
+- **Files and strings**: read-file / write-file; read-line (raw input
+  line); string->symbol / symbol->string, index-of, contains?, replace,
+  upcase, downcase, trim, char->code / code->char.
+- **Comparisons**: >= <= != as real chained builtins that stay inert on
+  symbolic arguments (no more "unknown operator is truthy").
+- **Time as a value**: (now) Unix seconds, (date-parts ts) dict,
+  (date-format ts), all UTC.
+- **Inspectable errors**: (error ...) and failed asserts record their
+  message instead of printing it; (error-message) reads it inside a try
+  fallback, and the CLI prints it only when nothing catches the error.
+- **Capability ports**: (http-get url) -> {status body} and (exec cmd) ->
+  {status stdout stderr}, explicitly enabled by the CLI and politely
+  absent in WASM, tests, and the LSP. One-liner that now works:
+  (dict-get (json-parse (dict-get (http-get "https://...") "body")) "key")
+
+## [0.16.0] - 2026-07-14
+
+The batteries release. Design rule, now written down: Lispium computes
+over values and emits documents; it never hosts processes.
+
+### Added
+- **The prelude**: a stdlib written in Lispium, embedded in the binary,
+  loaded into every environment, fully shadowable (zip, take/drop, join,
+  member?, flatten, compose, max-by, sum-list, ...).
+- **`>=`, `<=`, `!=`** as real chained builtins (symbolic-inert like < >).
+- **Dictionaries**: a native insertion-ordered hashmap type with
+  immutable semantics (dict-set returns a new dict), `{k: v}` REPL
+  printing, order-insensitive `=`, and 10 builtins.
+- **Strings**: read-line, string->symbol, symbol->string, index-of,
+  contains?, replace, upcase, downcase, trim, char->code, code->char.
+- **Files**: read-file and write-file (through the host io; politely
+  absent in the browser playground).
+- **JSON + CSV**: json-parse/json-emit (objects <-> dicts) and
+  csv-parse/csv-emit (numeric cells auto-convert, quoting handled).
+- **Time as a value**: now, date-parts, date-format (UTC).
+- **Inspectable errors**: (error ...) and failed asserts record their
+  message instead of printing; (error-message) reads it inside a try
+  fallback, and uncaught errors print it at the top level.
+- **Capability ports**: http-get ({status body}) and exec
+  ({status stdout stderr}), enabled by the CLI and off in WASM/tests/LSP.
+
 ## [0.15.0] - 2026-07-13
 
 ### Added

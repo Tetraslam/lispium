@@ -250,6 +250,8 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
     env.out = stdout;
     env.in = stdin;
     env.io = io;
+    env.allow_net = true;
+    env.allow_exec = true;
 
     // Interactive terminals get the raw-mode line editor (arrow keys,
     // history, cursor editing); piped input uses plain line reading
@@ -520,6 +522,7 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
                 allocator.destroy(expr);
             }
 
+            builtins.clearErrorMessage();
             evaluator.setPositionMap(&positions);
             const result = eval(expr, &env) catch |err| {
                 const err_msg = switch (err) {
@@ -536,10 +539,12 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
                     error.Undefined => "result is mathematically undefined at this point",
                 };
                 const ctx = evaluator.takeErrorContext();
+                const user_msg = builtins.takeErrorMessage();
+                const shown = if (user_msg.len > 0) user_msg else err_msg;
                 if (ctx.len > 0) {
-                    try stdout.print("Error: {s} (in '{s}')\n", .{ err_msg, ctx });
+                    try stdout.print("Error: {s} (in '{s}')\n", .{ shown, ctx });
                 } else {
-                    try stdout.print("Error: {s}\n", .{err_msg});
+                    try stdout.print("Error: {s}\n", .{shown});
                 }
                 try printCaret(stdout, input, evaluator.takeErrorPosition());
                 const frames = evaluator.takeCallStack();
@@ -623,6 +628,12 @@ fn validateExprInner(expr: *const Expr, visited: *std.AutoHashMap(usize, void), 
         .number => {},
         .big => {},
         .symbol, .owned_symbol, .string => {},
+        .dict => |d| {
+            var dict_it = d.map.iterator();
+            while (dict_it.next()) |entry| {
+                try validateExprInner(entry.value_ptr.*, visited, depth + 1);
+            }
+        },
         .lambda => |lam| {
             const body_ptr = @intFromPtr(lam.body);
             if (body_ptr == 0 or body_ptr == std.math.maxInt(usize)) {
@@ -699,6 +710,19 @@ fn printExprPretty(expr: *const Expr, writer: anytype, is_top: bool) PrintError!
         .number => |n| try printNum(n, writer),
         .big => |b| builtins.writeBig(b, writer) catch return PrintError.OutOfMemory,
         .string => |s| try writeEscapedString(writer, s),
+        .dict => |d| {
+            // Pretty form: {key: value, ...}
+            try writer.print("{{", .{});
+            var dict_it = d.map.iterator();
+            var first = true;
+            while (dict_it.next()) |entry| {
+                if (!first) try writer.print(", ", .{});
+                first = false;
+                try writer.print("{s}: ", .{entry.key_ptr.*});
+                try printExprPretty(entry.value_ptr.*, writer, false);
+            }
+            try writer.print("}}", .{});
+        },
         .symbol, .owned_symbol => |s| {
             // Use Greek letters for common symbols
             if (std.mem.eql(u8, s, "pi")) {

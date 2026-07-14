@@ -24,6 +24,10 @@ pub const Expr = union(enum) {
     owned_symbol: []const u8,
     /// String literal (owned, freed on deinit)
     string: []const u8,
+    /// Dictionary: string keys (owned) to owned values. Immutable in the
+    /// language: dict-set returns a new dict. Symbol/number keys are
+    /// stringified on the way in.
+    dict: Dict,
     list: std.ArrayList(*Expr),
     /// Lambda: stores parameter names and body expression
     /// Format: lambda{ .params = ["x", "y"], .body = <expr> }
@@ -36,6 +40,23 @@ pub const Expr = union(enum) {
 
         pub fn toConst(self: Big) std.math.big.int.Const {
             return .{ .limbs = self.limbs, .positive = self.positive };
+        }
+    };
+
+    pub const Dict = struct {
+        /// Keys are owned strings; values are owned expressions
+        map: std.StringArrayHashMapUnmanaged(*Expr),
+
+        pub const empty: Dict = .{ .map = .empty };
+
+        pub fn deinitAll(self: *Dict, allocator: std.mem.Allocator) void {
+            var it = self.map.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                entry.value_ptr.*.deinit(allocator);
+                allocator.destroy(entry.value_ptr.*);
+            }
+            self.map.deinit(allocator);
         }
     };
 
@@ -69,6 +90,9 @@ pub const Expr = union(enum) {
             },
             .big => |b| {
                 allocator.free(b.limbs);
+            },
+            .dict => |*d| {
+                d.deinitAll(allocator);
             },
             else => {},
         }

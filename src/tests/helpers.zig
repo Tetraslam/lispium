@@ -30,6 +30,15 @@ pub fn exprToString(allocator: std.mem.Allocator, expr: *const Expr) ![]u8 {
 pub fn writeExpr(expr: *const Expr, writer: anytype) !void {
     switch (expr.*) {
         .big => |b| try builtins.writeBig(b, writer),
+        .dict => |d| {
+            try writer.print("(dict", .{});
+            var dict_it = d.map.iterator();
+            while (dict_it.next()) |entry| {
+                try writer.print(" \"{s}\" ", .{entry.key_ptr.*});
+                try writeExpr(entry.value_ptr.*, writer);
+            }
+            try writer.print(")", .{});
+        },
         .string => |s| try writer.print("\"{s}\"", .{s}),
         .number => |n| {
             if (n == @floor(n) and @abs(n) < 1e15) {

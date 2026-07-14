@@ -3,6 +3,53 @@
 const std = @import("std");
 const Env = @import("environment.zig").Env;
 const builtins = @import("builtins.zig");
+const data = @import("data.zig");
+const ports = @import("ports.zig");
+
+/// The prelude source, compiled into the binary. Evaluated into every
+/// environment after the native builtins; symbols reference this static
+/// buffer, so no lifetime bookkeeping is needed.
+const prelude_source = @embedFile("prelude.lspm");
+
+/// Evaluates the prelude into the environment. Failures are impossible
+/// for a well-formed prelude; a broken one fails tests immediately.
+pub fn installPrelude(env: *Env) !void {
+    const Tokenizer = @import("tokenizer.zig").Tokenizer;
+    const Parser = @import("parser.zig").Parser;
+    const evaluator = @import("evaluator.zig");
+
+    var tokenizer = Tokenizer.init(comptime stripComments(prelude_source));
+    var tokens: std.ArrayList([]const u8) = .empty;
+    defer tokens.deinit(env.allocator);
+    while (tokenizer.next()) |tok| {
+        try tokens.append(env.allocator, tok);
+    }
+    var parser = Parser.init(env.allocator, tokens);
+    while (parser.position < tokens.items.len) {
+        const expr = try parser.parseExpr();
+        defer {
+            expr.deinit(env.allocator);
+            env.allocator.destroy(expr);
+        }
+        const result = try evaluator.eval(expr, env);
+        result.deinit(env.allocator);
+        env.allocator.destroy(result);
+    }
+}
+
+/// Comptime comment stripping so the tokenizer never sees `;` lines.
+fn stripComments(comptime source: []const u8) []const u8 {
+    comptime {
+        @setEvalBranchQuota(200000);
+        var out: []const u8 = "";
+        var it = std.mem.splitScalar(u8, source, '\n');
+        while (it.next()) |line| {
+            const idx = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+            out = out ++ line[0..idx] ++ "\n";
+        }
+        return out;
+    }
+}
 
 pub fn installBuiltins(env: *Env) !void {
     // Arithmetic
@@ -30,6 +77,39 @@ pub fn installBuiltins(env: *Env) !void {
     // I/O
     try env.putBuiltin("print", builtins.builtin_print);
     try env.putBuiltin("read", builtins.builtin_read);
+    try env.putBuiltin("read-line", builtins.builtin_read_line);
+    try env.putBuiltin("error-message", builtins.builtin_error_message);
+    try env.putBuiltin("json-parse", data.builtin_json_parse);
+    try env.putBuiltin("json-emit", data.builtin_json_emit);
+    try env.putBuiltin("csv-parse", data.builtin_csv_parse);
+    try env.putBuiltin("csv-emit", data.builtin_csv_emit);
+    try env.putBuiltin("now", data.builtin_now);
+    try env.putBuiltin("date-parts", data.builtin_date_parts);
+    try env.putBuiltin("date-format", data.builtin_date_format);
+    try env.putBuiltin("http-get", ports.builtin_http_get);
+    try env.putBuiltin("exec", ports.builtin_exec);
+    try env.putBuiltin("dict", builtins.builtin_dict);
+    try env.putBuiltin("dict-get", builtins.builtin_dict_get);
+    try env.putBuiltin("dict-has?", builtins.builtin_dict_has);
+    try env.putBuiltin("dict-set", builtins.builtin_dict_set);
+    try env.putBuiltin("dict-remove", builtins.builtin_dict_remove);
+    try env.putBuiltin("dict-keys", builtins.builtin_dict_keys);
+    try env.putBuiltin("dict-values", builtins.builtin_dict_values);
+    try env.putBuiltin("dict-size", builtins.builtin_dict_size);
+    try env.putBuiltin("dict-merge", builtins.builtin_dict_merge);
+    try env.putBuiltin("dict?", builtins.builtin_is_dict);
+    try env.putBuiltin("string->symbol", builtins.builtin_string_to_symbol);
+    try env.putBuiltin("symbol->string", builtins.builtin_symbol_to_string);
+    try env.putBuiltin("index-of", builtins.builtin_index_of);
+    try env.putBuiltin("contains?", builtins.builtin_contains);
+    try env.putBuiltin("replace", builtins.builtin_replace);
+    try env.putBuiltin("upcase", builtins.builtin_upcase);
+    try env.putBuiltin("downcase", builtins.builtin_downcase);
+    try env.putBuiltin("trim", builtins.builtin_trim);
+    try env.putBuiltin("char->code", builtins.builtin_char_to_code);
+    try env.putBuiltin("code->char", builtins.builtin_code_to_char);
+    try env.putBuiltin("read-file", builtins.builtin_read_file);
+    try env.putBuiltin("write-file", builtins.builtin_write_file);
 
     // Type predicates and program structure
     try env.putBuiltin("number?", builtins.builtin_is_number);
@@ -181,6 +261,9 @@ pub fn installBuiltins(env: *Env) !void {
     try env.putBuiltin("=", builtins.builtin_eq);
     try env.putBuiltin("<", builtins.builtin_lt);
     try env.putBuiltin(">", builtins.builtin_gt);
+    try env.putBuiltin("<=", builtins.builtin_le);
+    try env.putBuiltin(">=", builtins.builtin_ge);
+    try env.putBuiltin("!=", builtins.builtin_neq);
 
     // Special functions
     try env.putBuiltin("gamma", builtins.builtin_gamma);
@@ -271,4 +354,7 @@ pub fn installBuiltins(env: *Env) !void {
 
     // LaTeX export
     try env.putBuiltin("latex", builtins.builtin_latex);
+
+    // The prelude rides along with the builtins: one call installs both
+    try installPrelude(env);
 }

@@ -224,6 +224,10 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
             // Return a copy to ensure the result has independent ownership
             return try symbolic.copyExpr(expr, env.allocator);
         },
+        .dict => {
+            // Dicts are self-evaluating values
+            return try symbolic.copyExpr(expr, env.allocator);
+        },
         .string => {
             // Strings are self-evaluating
             return try symbolic.copyExpr(expr, env.allocator);
@@ -667,7 +671,7 @@ fn isShadowed(shadowed: *std.ArrayList([]const u8), name: []const u8) bool {
 /// lambda/let/letrec/sum/product/define forms are respected (shadowed).
 fn captureFreeVars(expr: *const Expr, shadowed: *std.ArrayList([]const u8), env: *Env) Error!*Expr {
     switch (expr.*) {
-        .number, .big, .string, .lambda => return try symbolic.copyExpr(expr, env.allocator),
+        .number, .big, .string, .lambda, .dict => return try symbolic.copyExpr(expr, env.allocator),
         .symbol, .owned_symbol => {
             const name = switch (expr.*) {
                 .symbol => |s| s,
@@ -942,6 +946,7 @@ fn isTruthy(v: *const Expr) bool {
     return switch (v.*) {
         .number => |n| n != 0,
         .big => true, // normalized bigs are never zero
+        .dict => |d| d.map.count() > 0,
         .symbol, .owned_symbol => true,
         .string => |s| s.len > 0,
         .list => |lst| lst.items.len > 0,
@@ -1207,6 +1212,7 @@ fn evalIf(expr: *Expr, env: *Env) Error!*Expr {
     const is_truthy = switch (cond.*) {
         .number => |n| n != 0,
         .big => true, // normalized bigs are never zero
+        .dict => |d| d.map.count() > 0,
         .symbol, .owned_symbol => true,
         .string => |s| s.len > 0,
         .list => |lst| lst.items.len > 0,

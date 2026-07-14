@@ -873,21 +873,62 @@ pub fn builtin_apply(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     };
 }
 
+// ============================================================================
+// Error messages: (error ...) and failed (assert ...) record their message
+// in a threadlocal buffer instead of printing immediately, so (try ...)
+// can recover silently and inspect it via (error-message). The CLI/REPL
+// print the recorded message only when the error reaches the top level.
+// ============================================================================
+
+threadlocal var error_msg_buf: [512]u8 = undefined;
+threadlocal var error_msg_len: usize = 0;
+
+pub fn setErrorMessage(msg: []const u8) void {
+    const n = @min(msg.len, error_msg_buf.len);
+    @memcpy(error_msg_buf[0..n], msg[0..n]);
+    error_msg_len = n;
+}
+
+/// The most recent error message (empty when none). Does not clear:
+/// try-fallbacks read it via (error-message); the CLI clears after
+/// reporting via takeErrorMessage.
+pub fn peekErrorMessage() []const u8 {
+    return error_msg_buf[0..error_msg_len];
+}
+
+pub fn takeErrorMessage() []const u8 {
+    const n = error_msg_len;
+    error_msg_len = 0;
+    return error_msg_buf[0..n];
+}
+
+pub fn clearErrorMessage() void {
+    error_msg_len = 0;
+}
+
 pub fn builtin_error(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (error "message") - raises a user error, printing the message
-    if (env.out) |out| {
-        out.writeAll("error: ") catch {};
-        for (args.items, 0..) |arg, i| {
-            if (i > 0) out.writeAll(" ") catch {};
-            switch (arg.*) {
-                .string => |s| out.writeAll(s) catch {},
-                else => stepWriteExpr(arg, out) catch {},
-            }
+    // (error msg...) - raises a user error carrying a message; printed
+    // only if nothing catches it, readable in a try via (error-message)
+    _ = env;
+    var fbs_buf: [512]u8 = undefined;
+    var stream = std.Io.Writer.fixed(&fbs_buf);
+    for (args.items, 0..) |arg, i| {
+        if (i > 0) stream.writeAll(" ") catch break;
+        switch (arg.*) {
+            .string => |s| stream.writeAll(s) catch break,
+            else => stepWriteExpr(arg, &stream) catch break,
         }
-        out.writeAll("\n") catch {};
-        out.flush() catch {};
     }
+    setErrorMessage(stream.buffered());
     return BuiltinError.EvaluationError;
+}
+
+pub fn builtin_error_message(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (error-message) - the message of the most recent error (for use in
+    // a try fallback); "" when there hasn't been one
+    if (args.items.len != 0) return BuiltinError.InvalidArgument;
+    const owned = env.allocator.dupe(u8, peekErrorMessage()) catch return BuiltinError.OutOfMemory;
+    return makeStringExpr(env.allocator, owned);
 }
 
 pub fn builtin_assert(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
@@ -900,15 +941,14 @@ pub fn builtin_assert(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
         else => true,
     };
     if (!truthy) {
-        if (env.out) |out| {
-            out.writeAll("assertion failed") catch {};
-            if (args.items.len == 2 and args.items[1].* == .string) {
-                out.writeAll(": ") catch {};
-                out.writeAll(args.items[1].string) catch {};
-            }
-            out.writeAll("\n") catch {};
-            out.flush() catch {};
+        var fbs_buf: [512]u8 = undefined;
+        var stream = std.Io.Writer.fixed(&fbs_buf);
+        stream.writeAll("assertion failed") catch {};
+        if (args.items.len == 2 and args.items[1].* == .string) {
+            stream.writeAll(": ") catch {};
+            stream.writeAll(args.items[1].string) catch {};
         }
+        setErrorMessage(stream.buffered());
         return BuiltinError.EvaluationError;
     }
     return makeBool(env.allocator, true);
@@ -974,6 +1014,385 @@ pub fn builtin_read(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 fn makeSymbolExpr(allocator: std.mem.Allocator, name: []const u8) BuiltinError!*Expr {
     const result = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
     result.* = .{ .symbol = name };
+    return result;
+}
+
+/// Creates an owned string expression, taking ownership of `owned`.
+fn makeStringExpr(allocator: std.mem.Allocator, owned: []u8) BuiltinError!*Expr {
+    const result = allocator.create(Expr) catch {
+        allocator.free(owned);
+        return BuiltinError.OutOfMemory;
+    };
+    result.* = .{ .string = owned };
+    return result;
+}
+
+// ============================================================================
+// Dictionaries: Expr.dict wraps an insertion-ordered string-keyed map.
+// Immutable semantics: dict-set/dict-remove return NEW dicts. Symbol and
+// integer keys are stringified on the way in, so (dict-get d 'name) and
+// (dict-get d "name") hit the same slot.
+// ============================================================================
+
+/// Renders a key expression as an owned string (strings, symbols, and
+/// integer-valued numbers only).
+fn dictKeyString(key: *const Expr, allocator: std.mem.Allocator) BuiltinError![]u8 {
+    switch (key.*) {
+        .string => |str| return allocator.dupe(u8, str) catch return BuiltinError.OutOfMemory,
+        .symbol, .owned_symbol => |sym| return allocator.dupe(u8, sym) catch return BuiltinError.OutOfMemory,
+        .number => |n| {
+            if (n != @floor(n) or @abs(n) > 9.0e15) return BuiltinError.InvalidArgument;
+            var buf: [32]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "{d}", .{@as(i64, @intFromFloat(n))}) catch
+                return BuiltinError.InvalidArgument;
+            return allocator.dupe(u8, text) catch return BuiltinError.OutOfMemory;
+        },
+        else => return BuiltinError.InvalidArgument,
+    }
+}
+
+pub fn builtin_dict(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict k1 v1 k2 v2 ...) - builds a dictionary; later keys win
+    if (args.items.len % 2 != 0) return BuiltinError.InvalidArgument;
+
+    var d: Expr.Dict = .empty;
+    errdefer d.deinitAll(env.allocator);
+
+    var i: usize = 0;
+    while (i < args.items.len) : (i += 2) {
+        const key = try dictKeyString(args.items[i], env.allocator);
+        errdefer env.allocator.free(key);
+        const val = symbolic.copyExpr(args.items[i + 1], env.allocator) catch return BuiltinError.OutOfMemory;
+        const gop = d.map.getOrPut(env.allocator, key) catch {
+            val.deinit(env.allocator);
+            env.allocator.destroy(val);
+            return BuiltinError.OutOfMemory;
+        };
+        if (gop.found_existing) {
+            env.allocator.free(key);
+            gop.value_ptr.*.deinit(env.allocator);
+            env.allocator.destroy(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = val;
+    }
+
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .dict = d };
+    return result;
+}
+
+pub fn builtin_dict_get(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-get d key) or (dict-get d key default) - lookup; missing keys
+    // return the default (or 0)
+    if (args.items.len != 2 and args.items.len != 3) return BuiltinError.InvalidArgument;
+    if (args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+    const key = try dictKeyString(args.items[1], env.allocator);
+    defer env.allocator.free(key);
+
+    if (args.items[0].dict.map.get(key)) |val| {
+        return symbolic.copyExpr(val, env.allocator) catch return BuiltinError.OutOfMemory;
+    }
+    if (args.items.len == 3) {
+        return symbolic.copyExpr(args.items[2], env.allocator) catch return BuiltinError.OutOfMemory;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = 0 };
+    return result;
+}
+
+pub fn builtin_dict_has(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-has? d key)
+    if (args.items.len != 2 or args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+    const key = try dictKeyString(args.items[1], env.allocator);
+    defer env.allocator.free(key);
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = if (args.items[0].dict.map.contains(key)) 1 else 0 };
+    return result;
+}
+
+pub fn builtin_dict_set(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-set d key value) - a NEW dict with the binding added/replaced
+    if (args.items.len != 3 or args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+
+    const copy = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    errdefer {
+        copy.deinit(env.allocator);
+        env.allocator.destroy(copy);
+    }
+    const key = try dictKeyString(args.items[1], env.allocator);
+    errdefer env.allocator.free(key);
+    const val = symbolic.copyExpr(args.items[2], env.allocator) catch return BuiltinError.OutOfMemory;
+
+    const gop = copy.dict.map.getOrPut(env.allocator, key) catch {
+        val.deinit(env.allocator);
+        env.allocator.destroy(val);
+        return BuiltinError.OutOfMemory;
+    };
+    if (gop.found_existing) {
+        env.allocator.free(key);
+        gop.value_ptr.*.deinit(env.allocator);
+        env.allocator.destroy(gop.value_ptr.*);
+    }
+    gop.value_ptr.* = val;
+    return copy;
+}
+
+pub fn builtin_dict_remove(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-remove d key) - a NEW dict without the key
+    if (args.items.len != 2 or args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+    const copy = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    const key = dictKeyString(args.items[1], env.allocator) catch |err| {
+        copy.deinit(env.allocator);
+        env.allocator.destroy(copy);
+        return err;
+    };
+    defer env.allocator.free(key);
+    if (copy.dict.map.fetchOrderedRemove(key)) |kv| {
+        env.allocator.free(kv.key);
+        kv.value.deinit(env.allocator);
+        env.allocator.destroy(kv.value);
+    }
+    return copy;
+}
+
+pub fn builtin_dict_keys(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-keys d) - the keys as a list of strings, in insertion order
+    if (args.items.len != 1 or args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+    var list: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (list.items) |item| {
+            item.deinit(env.allocator);
+            env.allocator.destroy(item);
+        }
+        list.deinit(env.allocator);
+    }
+    const head = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    head.* = .{ .symbol = "list" };
+    list.append(env.allocator, head) catch return BuiltinError.OutOfMemory;
+    var it = args.items[0].dict.map.iterator();
+    while (it.next()) |entry| {
+        const owned = env.allocator.dupe(u8, entry.key_ptr.*) catch return BuiltinError.OutOfMemory;
+        const key_expr = env.allocator.create(Expr) catch {
+            env.allocator.free(owned);
+            return BuiltinError.OutOfMemory;
+        };
+        key_expr.* = .{ .string = owned };
+        list.append(env.allocator, key_expr) catch return BuiltinError.OutOfMemory;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
+pub fn builtin_dict_values(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-values d) - the values as a list, in insertion order
+    if (args.items.len != 1 or args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+    var list: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (list.items) |item| {
+            item.deinit(env.allocator);
+            env.allocator.destroy(item);
+        }
+        list.deinit(env.allocator);
+    }
+    const head = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    head.* = .{ .symbol = "list" };
+    list.append(env.allocator, head) catch return BuiltinError.OutOfMemory;
+    var it = args.items[0].dict.map.iterator();
+    while (it.next()) |entry| {
+        const copy = symbolic.copyExpr(entry.value_ptr.*, env.allocator) catch return BuiltinError.OutOfMemory;
+        list.append(env.allocator, copy) catch return BuiltinError.OutOfMemory;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .list = list };
+    return result;
+}
+
+pub fn builtin_dict_size(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-size d)
+    if (args.items.len != 1 or args.items[0].* != .dict) return BuiltinError.InvalidArgument;
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = @floatFromInt(args.items[0].dict.map.count()) };
+    return result;
+}
+
+pub fn builtin_dict_merge(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict-merge a b) - a NEW dict; b's entries win on conflicts
+    if (args.items.len != 2 or args.items[0].* != .dict or args.items[1].* != .dict) {
+        return BuiltinError.InvalidArgument;
+    }
+    const copy = symbolic.copyExpr(args.items[0], env.allocator) catch return BuiltinError.OutOfMemory;
+    errdefer {
+        copy.deinit(env.allocator);
+        env.allocator.destroy(copy);
+    }
+    var it = args.items[1].dict.map.iterator();
+    while (it.next()) |entry| {
+        const key = env.allocator.dupe(u8, entry.key_ptr.*) catch return BuiltinError.OutOfMemory;
+        errdefer env.allocator.free(key);
+        const val = symbolic.copyExpr(entry.value_ptr.*, env.allocator) catch return BuiltinError.OutOfMemory;
+        const gop = copy.dict.map.getOrPut(env.allocator, key) catch {
+            val.deinit(env.allocator);
+            env.allocator.destroy(val);
+            return BuiltinError.OutOfMemory;
+        };
+        if (gop.found_existing) {
+            env.allocator.free(key);
+            gop.value_ptr.*.deinit(env.allocator);
+            env.allocator.destroy(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = val;
+    }
+    return copy;
+}
+
+pub fn builtin_is_dict(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (dict? x)
+    if (args.items.len != 1) return BuiltinError.InvalidArgument;
+    return makeBool(env.allocator, args.items[0].* == .dict);
+}
+
+pub fn builtin_read_line(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (read-line) - reads one raw line from input as a string (without
+    // the newline), so programs can parse free-form text themselves.
+    // Returns the symbol eof at end of input. Unlike (read), the whole
+    // line survives: "go north" is one string, not a lost word.
+    if (args.items.len != 0) return BuiltinError.InvalidArgument;
+    const in = env.in orelse return makeSymbolExpr(env.allocator, "eof");
+
+    const line = (in.takeDelimiter('\n') catch return BuiltinError.EvaluationError) orelse
+        return makeSymbolExpr(env.allocator, "eof");
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    const owned = env.allocator.dupe(u8, trimmed) catch return BuiltinError.OutOfMemory;
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_string_to_symbol(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (string->symbol s) - interns a string as a symbol: the bridge from
+    // parsed text (split, read-line) into symbol-keyed data structures
+    if (args.items.len != 1 or args.items[0].* != .string) return BuiltinError.InvalidArgument;
+    const owned = env.allocator.dupe(u8, args.items[0].string) catch return BuiltinError.OutOfMemory;
+    const result = env.allocator.create(Expr) catch {
+        env.allocator.free(owned);
+        return BuiltinError.OutOfMemory;
+    };
+    result.* = .{ .owned_symbol = owned };
+    return result;
+}
+
+pub fn builtin_symbol_to_string(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (symbol->string sym)
+    if (args.items.len != 1) return BuiltinError.InvalidArgument;
+    const name = switch (args.items[0].*) {
+        .symbol, .owned_symbol => |sym| sym,
+        else => return BuiltinError.InvalidArgument,
+    };
+    const owned = env.allocator.dupe(u8, name) catch return BuiltinError.OutOfMemory;
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_index_of(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (index-of s sub) - byte index of the first occurrence, or -1
+    if (args.items.len != 2 or args.items[0].* != .string or args.items[1].* != .string) {
+        return BuiltinError.InvalidArgument;
+    }
+    const idx = std.mem.indexOf(u8, args.items[0].string, args.items[1].string);
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = if (idx) |i| @floatFromInt(i) else -1 };
+    return result;
+}
+
+pub fn builtin_contains(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (contains? s sub) - 1 when sub occurs in s
+    if (args.items.len != 2 or args.items[0].* != .string or args.items[1].* != .string) {
+        return BuiltinError.InvalidArgument;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = if (std.mem.indexOf(u8, args.items[0].string, args.items[1].string) != null) 1 else 0 };
+    return result;
+}
+
+pub fn builtin_replace(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (replace s old new) - replaces every occurrence of old with new
+    if (args.items.len != 3 or args.items[0].* != .string or
+        args.items[1].* != .string or args.items[2].* != .string)
+    {
+        return BuiltinError.InvalidArgument;
+    }
+    if (args.items[1].string.len == 0) return BuiltinError.InvalidArgument;
+    const owned = std.mem.replaceOwned(u8, env.allocator, args.items[0].string, args.items[1].string, args.items[2].string) catch return BuiltinError.OutOfMemory;
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_upcase(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (upcase s) - ASCII uppercase
+    if (args.items.len != 1 or args.items[0].* != .string) return BuiltinError.InvalidArgument;
+    const owned = env.allocator.dupe(u8, args.items[0].string) catch return BuiltinError.OutOfMemory;
+    for (owned) |*c| c.* = std.ascii.toUpper(c.*);
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_downcase(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (downcase s) - ASCII lowercase
+    if (args.items.len != 1 or args.items[0].* != .string) return BuiltinError.InvalidArgument;
+    const owned = env.allocator.dupe(u8, args.items[0].string) catch return BuiltinError.OutOfMemory;
+    for (owned) |*c| c.* = std.ascii.toLower(c.*);
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_trim(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (trim s) - strips leading/trailing whitespace
+    if (args.items.len != 1 or args.items[0].* != .string) return BuiltinError.InvalidArgument;
+    const trimmed = std.mem.trim(u8, args.items[0].string, " \t\r\n");
+    const owned = env.allocator.dupe(u8, trimmed) catch return BuiltinError.OutOfMemory;
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_char_to_code(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (char->code "a") - the byte value of a 1-character string
+    if (args.items.len != 1 or args.items[0].* != .string or args.items[0].string.len != 1) {
+        return BuiltinError.InvalidArgument;
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = @floatFromInt(args.items[0].string[0]) };
+    return result;
+}
+
+pub fn builtin_code_to_char(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (code->char 97) - a 1-character string from a byte value
+    if (args.items.len != 1 or args.items[0].* != .number) return BuiltinError.InvalidArgument;
+    const n = args.items[0].number;
+    if (n < 0 or n > 255 or n != @floor(n)) return BuiltinError.InvalidArgument;
+    const owned = env.allocator.alloc(u8, 1) catch return BuiltinError.OutOfMemory;
+    owned[0] = @intFromFloat(n);
+    return makeStringExpr(env.allocator, owned);
+}
+
+pub fn builtin_read_file(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (read-file path) - the whole file as a string (10 MB cap)
+    if (comptime @import("builtin").os.tag == .freestanding) {
+        return BuiltinError.EvaluationError; // no filesystem in the playground
+    }
+    if (args.items.len != 1 or args.items[0].* != .string) return BuiltinError.InvalidArgument;
+    const io = env.io orelse return BuiltinError.EvaluationError;
+    const data = std.Io.Dir.cwd().readFileAlloc(io, args.items[0].string, env.allocator, .limited(1024 * 1024 * 10)) catch
+        return BuiltinError.EvaluationError;
+    return makeStringExpr(env.allocator, data);
+}
+
+pub fn builtin_write_file(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (write-file path string) - writes (replaces) a file; returns 1
+    if (comptime @import("builtin").os.tag == .freestanding) {
+        return BuiltinError.EvaluationError;
+    }
+    if (args.items.len != 2 or args.items[0].* != .string or args.items[1].* != .string) {
+        return BuiltinError.InvalidArgument;
+    }
+    const io = env.io orelse return BuiltinError.EvaluationError;
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args.items[0].string, .data = args.items[1].string }) catch
+        return BuiltinError.EvaluationError;
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = 1 };
     return result;
 }
 
@@ -1837,9 +2256,20 @@ pub fn builtin_eq(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     return result;
 }
 
-/// Shared implementation for < and >: numeric chains evaluate to 0/1;
+/// Shared implementation for < > <= >=: numeric chains evaluate to 0/1;
 /// symbolic arguments produce an inert symbolic comparison expression.
-fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, comptime less: bool) BuiltinError!*Expr {
+const ChainOp = enum { lt, gt, le, ge };
+
+fn chainHolds(comptime T: type, cmp: ChainOp, a: T, b: T) bool {
+    return switch (cmp) {
+        .lt => a < b,
+        .gt => a > b,
+        .le => a <= b,
+        .ge => a >= b,
+    };
+}
+
+fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, comptime cmp: ChainOp) BuiltinError!*Expr {
     if (args.items.len < 2) return BuiltinError.InvalidArgument;
 
     // Exact chain when big integers are involved (floats would round)
@@ -1848,7 +2278,12 @@ fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, compti
         var i: usize = 0;
         while (i + 1 < args.items.len) : (i += 1) {
             const ord = bigOrder(args.items[i], args.items[i + 1], env.allocator) orelse break :exact;
-            const ok = if (less) ord == .lt else ord == .gt;
+            const ok = switch (cmp) {
+                .lt => ord == .lt,
+                .gt => ord == .gt,
+                .le => ord != .gt,
+                .ge => ord != .lt,
+            };
             if (!ok) {
                 holds = false;
                 break;
@@ -1864,7 +2299,7 @@ fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, compti
         var holds = true;
         var i: usize = 0;
         while (i + 1 < vals.len) : (i += 1) {
-            const ok = if (less) vals[i] < vals[i + 1] else vals[i] > vals[i + 1];
+            const ok = chainHolds(f64, cmp, vals[i], vals[i + 1]);
             if (!ok) {
                 holds = false;
                 break;
@@ -1891,12 +2326,34 @@ fn comparisonChain(args: std.ArrayList(*Expr), env: *Env, op: []const u8, compti
 
 pub fn builtin_lt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (< a b ...) - chained less-than; symbolic args stay symbolic
-    return comparisonChain(args, env, "<", true);
+    return comparisonChain(args, env, "<", .lt);
 }
 
 pub fn builtin_gt(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // (> a b ...) - chained greater-than; symbolic args stay symbolic
-    return comparisonChain(args, env, ">", false);
+    return comparisonChain(args, env, ">", .gt);
+}
+
+pub fn builtin_le(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (<= a b ...) - chained less-or-equal
+    return comparisonChain(args, env, "<=", .le);
+}
+
+pub fn builtin_ge(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (>= a b ...) - chained greater-or-equal
+    return comparisonChain(args, env, ">=", .ge);
+}
+
+pub fn builtin_neq(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
+    // (!= a b ...) - true when the arguments are NOT all equal
+    const eq_result = try builtin_eq(args, env);
+    defer {
+        eq_result.deinit(env.allocator);
+        env.allocator.destroy(eq_result);
+    }
+    const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
+    result.* = .{ .number = if (eq_result.number == 0) 1 else 0 };
+    return result;
 }
 
 // ============================================================================
@@ -1996,6 +2453,7 @@ pub fn builtin_not(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         .big => true, // normalized bigs are never zero
         .string => true,
         .lambda => true,
+        .dict => |d| d.map.count() > 0,
         .list => |lst| blk: {
             // Non-empty lists are values (data) and truthy — except an
             // inert symbolic expression is unknowable; but at this point
@@ -3419,7 +3877,7 @@ pub fn builtin_simplify(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Exp
 /// symbol x carries a `positive` assumption in the environment.
 fn applyAssumptionRules(expr: *const Expr, env: *Env) BuiltinError!*Expr {
     switch (expr.*) {
-        .number, .big, .symbol, .owned_symbol, .string, .lambda => {
+        .number, .big, .symbol, .owned_symbol, .string, .lambda, .dict => {
             return symbolic.copyExpr(expr, env.allocator) catch return BuiltinError.OutOfMemory;
         },
         .list => |lst| {
@@ -3475,7 +3933,7 @@ pub fn builtin_evalf(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 
 fn evalfExpr(expr: *const Expr, allocator: std.mem.Allocator) BuiltinError!*Expr {
     switch (expr.*) {
-        .string => {
+        .string, .dict => {
             return symbolic.copyExpr(expr, allocator) catch return BuiltinError.OutOfMemory;
         },
         .big => |b| {
@@ -7282,6 +7740,20 @@ const LatexError = error{OutOfMemory};
 
 fn exprToLatex(expr: *const Expr, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) LatexError!void {
     switch (expr.*) {
+        .dict => |d| {
+            buf.appendSlice(allocator, "\\{") catch return error.OutOfMemory;
+            var it = d.map.iterator();
+            var first = true;
+            while (it.next()) |entry| {
+                if (!first) buf.appendSlice(allocator, ",\\ ") catch return error.OutOfMemory;
+                first = false;
+                buf.appendSlice(allocator, "\\text{") catch return error.OutOfMemory;
+                buf.appendSlice(allocator, entry.key_ptr.*) catch return error.OutOfMemory;
+                buf.appendSlice(allocator, "}: ") catch return error.OutOfMemory;
+                try exprToLatex(entry.value_ptr.*, buf, allocator);
+            }
+            buf.appendSlice(allocator, "\\}") catch return error.OutOfMemory;
+        },
         .big => |b| {
             const text = b.toConst().toStringAlloc(allocator, 10, .lower) catch return error.OutOfMemory;
             defer allocator.free(text);
@@ -9993,6 +10465,16 @@ fn memoWriteExpr(expr: *const Expr, writer: anytype) !void {
     }
     switch (expr.*) {
         .big => |b| try writeBig(b, writer),
+        .dict => |d| {
+            // Round-trippable form: (dict "k" v ...)
+            try writer.print("(dict", .{});
+            var dict_it = d.map.iterator();
+            while (dict_it.next()) |entry| {
+                try writer.print(" \"{s}\" ", .{entry.key_ptr.*});
+                try memoWriteExpr(entry.value_ptr.*, writer);
+            }
+            try writer.print(")", .{});
+        },
         .string => |s| try writer.print("\"{s}\"", .{s}),
         .number => |n| {
             if (n == @floor(n) and @abs(n) < 1e15) {
@@ -10573,6 +11055,16 @@ fn stepWriteExpr(expr: *const Expr, writer: anytype) !void {
     }
     switch (expr.*) {
         .big => |b| try writeBig(b, writer),
+        .dict => |d| {
+            // Round-trippable form: (dict "k" v ...)
+            try writer.print("(dict", .{});
+            var dict_it = d.map.iterator();
+            while (dict_it.next()) |entry| {
+                try writer.print(" \"{s}\" ", .{entry.key_ptr.*});
+                try stepWriteExpr(entry.value_ptr.*, writer);
+            }
+            try writer.print(")", .{});
+        },
         .string => |s| try writer.print("\"{s}\"", .{s}),
         .number => |n| {
             if (n == @floor(n) and @abs(n) < 1e15) {

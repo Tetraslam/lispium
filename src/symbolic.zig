@@ -17,6 +17,16 @@ pub fn exprEqual(a: *const Expr, b: *const Expr) bool {
             if (b.* == .big) return ab.toConst().eql(b.big.toConst());
             return false;
         },
+        .dict => |ad| {
+            if (b.* != .dict) return false;
+            if (ad.map.count() != b.dict.map.count()) return false;
+            var it = ad.map.iterator();
+            while (it.next()) |entry| {
+                const other = b.dict.map.get(entry.key_ptr.*) orelse return false;
+                if (!exprEqual(entry.value_ptr.*, other)) return false;
+            }
+            return true;
+        },
         .string => |s| {
             if (b.* == .string) return std.mem.eql(u8, s, b.string);
             return false;
@@ -63,6 +73,30 @@ pub fn copyExpr(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*
 
     result.* = switch (expr.*) {
         .number => |n| .{ .number = n },
+        .dict => |d| blk: {
+            var copy: Expr.Dict = .empty;
+            errdefer copy.deinitAll(allocator);
+            copy.map.ensureTotalCapacity(allocator, d.map.count()) catch {
+                allocator.destroy(result);
+                return SimplifyError.OutOfMemory;
+            };
+            var it = d.map.iterator();
+            while (it.next()) |entry| {
+                const key = allocator.dupe(u8, entry.key_ptr.*) catch {
+                    copy.deinitAll(allocator);
+                    allocator.destroy(result);
+                    return SimplifyError.OutOfMemory;
+                };
+                const val = copyExpr(entry.value_ptr.*, allocator) catch {
+                    allocator.free(key);
+                    copy.deinitAll(allocator);
+                    allocator.destroy(result);
+                    return SimplifyError.OutOfMemory;
+                };
+                copy.map.putAssumeCapacity(key, val);
+            }
+            break :blk .{ .dict = copy };
+        },
         .big => |b| blk: {
             const limbs = allocator.dupe(std.math.big.Limb, b.limbs) catch {
                 allocator.destroy(result);
@@ -129,6 +163,7 @@ pub fn containsVariable(expr: *const Expr, var_name: []const u8) bool {
         .number => return false,
         .big => return false,
         .string => return false,
+        .dict => return false,
         .symbol => |s| return std.mem.eql(u8, s, var_name),
         .owned_symbol => |s| return std.mem.eql(u8, s, var_name),
         .list => |lst| {
@@ -180,6 +215,7 @@ fn simplifyInternal(expr: *const Expr, allocator: std.mem.Allocator, depth: usiz
         .big => return try copyExpr(expr, allocator),
         .symbol, .owned_symbol => return try copyExpr(expr, allocator),
         .string => return try copyExpr(expr, allocator),
+        .dict => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator),
         .list => |lst| {
             if (lst.items.len == 0) return try copyExpr(expr, allocator);
@@ -1129,7 +1165,7 @@ pub fn diff(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocato
 
 fn diffInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (expr.*) {
-        .number, .big, .string => {
+        .number, .big, .string, .dict => {
             return try makeNumber(allocator, 0);
         },
         .symbol, .owned_symbol => |s| {
@@ -1770,6 +1806,7 @@ pub fn integrate(expr: *const Expr, var_name: []const u8, allocator: std.mem.All
 fn integrateInternal(expr: *const Expr, var_name: []const u8, allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (expr.*) {
         .string => return try copyExpr(expr, allocator),
+        .dict => return try copyExpr(expr, allocator),
         .big => {
             // ∫c dx = c*x
             const c = try copyExpr(expr, allocator);
@@ -2036,6 +2073,7 @@ fn expandInternal(expr: *const Expr, allocator: std.mem.Allocator, depth: usize)
         .big => return try copyExpr(expr, allocator),
         .symbol, .owned_symbol => return try copyExpr(expr, allocator),
         .string => return try copyExpr(expr, allocator),
+        .dict => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator),
         .list => |lst| {
             if (lst.items.len == 0) return try copyExpr(expr, allocator);
@@ -2135,6 +2173,7 @@ pub fn substitute(expr: *const Expr, var_name: []const u8, value: *const Expr, a
         .number => return try copyExpr(expr, allocator),
         .big => return try copyExpr(expr, allocator),
         .string => return try copyExpr(expr, allocator),
+        .dict => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator), // Don't substitute inside lambdas (lexical scope)
         .symbol, .owned_symbol => |s| {
             if (std.mem.eql(u8, s, var_name)) {
@@ -2175,6 +2214,7 @@ fn evalNumeric(expr: *const Expr, allocator: std.mem.Allocator) SimplifyError!*E
         .big => return try copyExpr(expr, allocator),
         .symbol, .owned_symbol => return try copyExpr(expr, allocator),
         .string => return try copyExpr(expr, allocator),
+        .dict => return try copyExpr(expr, allocator),
         .lambda => return try copyExpr(expr, allocator),
         .list => |lst| {
             if (lst.items.len == 0) return try copyExpr(expr, allocator);
@@ -2297,7 +2337,7 @@ fn hasUndefinedValue(expr: *const Expr) bool {
     switch (expr.*) {
         .number => |n| return !std.math.isFinite(n),
         .big => return false,
-        .symbol, .owned_symbol, .string, .lambda => return false,
+        .symbol, .owned_symbol, .string, .lambda, .dict => return false,
         .list => |lst| {
             if (lst.items.len > 0 and lst.items[0].* == .symbol) {
                 const op = lst.items[0].symbol;
@@ -2496,6 +2536,7 @@ fn collectPolyCoeffsInner(expr: *const Expr, var_name: []const u8, coeffs: *[5]f
     switch (expr.*) {
         .string => return false,
         .big => return false,
+        .dict => return false,
         .number => |n| {
             coeffs[0] += n;
             return true;
@@ -3351,7 +3392,7 @@ fn analyzeTermForVar(term: *const Expr, var_name: []const u8, allocator: std.mem
 /// Checks if an expression contains the variable
 fn containsVar(expr: *const Expr, var_name: []const u8) bool {
     switch (expr.*) {
-        .number, .big, .string => return false,
+        .number, .big, .string, .dict => return false,
         .symbol, .owned_symbol => |s| return std.mem.eql(u8, s, var_name),
         .lambda => return false,
         .list => |lst| {
@@ -3959,6 +4000,7 @@ fn matchPatternInner(pattern: *const Expr, expr: *const Expr, bindings: *std.Str
         .number => |n| {
             return expr.* == .number and expr.number == n;
         },
+        .dict => return exprEqual(pattern, expr),
         .big => |b| {
             return expr.* == .big and b.toConst().eql(expr.big.toConst());
         },
@@ -4012,7 +4054,7 @@ fn matchPatternInner(pattern: *const Expr, expr: *const Expr, bindings: *std.Str
 /// Returns a new expression with pattern variables substituted.
 pub fn applyBindings(replacement: *const Expr, bindings: *std.StringHashMap(*Expr), allocator: std.mem.Allocator) SimplifyError!*Expr {
     switch (replacement.*) {
-        .number, .big, .string => return try copyExpr(replacement, allocator),
+        .number, .big, .string, .dict => return try copyExpr(replacement, allocator),
         .symbol, .owned_symbol => |s| {
             if (isPatternVar(s)) {
                 if (bindings.get(s)) |bound_expr| {
