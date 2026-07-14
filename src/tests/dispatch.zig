@@ -120,3 +120,38 @@ test "dispatch: closures returned from functions are callable" {
     try run(allocator, &env, "(define add5 (make-adder 7))");
     try expectEval(allocator, &env, "(add5 10)", "17");
 }
+
+test "dispatch: builtins are first-class through variables and parameters" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+
+    // (define f +) makes f act as +
+    try run(allocator, &env, "(define plus +)");
+    try expectEval(allocator, &env, "(plus 3 4)", "7");
+
+    // ... including through function parameters (captured as (quote +))
+    try run(allocator, &env, "(define (g f a b) (f a b))");
+    try expectEval(allocator, &env, "(g + 2 3)", "5");
+    try expectEval(allocator, &env, "(g max 2 3)", "3");
+
+    // Rebinding the alias changes dispatch
+    try run(allocator, &env, "(define plus -)");
+    try expectEval(allocator, &env, "(plus 3 4)", "-1");
+}
+
+test "dispatch: not uses general truthiness" {
+    const allocator = testing.allocator;
+    var env = try h.setupEnv(allocator);
+    defer env.deinit();
+
+    try expectEval(allocator, &env, "(not 0)", "1");
+    try expectEval(allocator, &env, "(not 5)", "0");
+    try expectEval(allocator, &env, "(not '())", "1");
+    try expectEval(allocator, &env, "(not '(a b))", "0");
+    try expectEval(allocator, &env, "(not \"s\")", "0");
+    try expectEval(allocator, &env, "(not (list))", "1");
+    try expectEval(allocator, &env, "(not (assoc 'z '((a 1))))", "1");
+    // Bare symbols stay symbolic
+    try expectEval(allocator, &env, "(not x)", "(not x)");
+}

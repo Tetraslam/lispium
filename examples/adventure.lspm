@@ -1,0 +1,319 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; THE AMULET OF LISPIUM - a text adventure built on a game DSL.
+; 
+; The point of this example is the DSL: rooms are declared with a
+; (defroom ...) macro that reads like configuration and expands into
+; world-building code. The engine underneath is pure: game state is a
+; value (current room, inventory, item locations, flags) and every
+; command maps old state -> new state + message. No mutation anywhere.
+; 
+; Playing it:
+; lispium run examples/adventure.lspm        starts the game on a TTY
+; commands are s-expressions, one per line:
+; look            (go north)      (take lantern)
+; inventory       (drop lantern)  quit / help
+; 
+; Piped/CI runs hit end-of-input immediately, so the scripted walkthrough
+; test suite below is what keeps the game honest.
+; 
+; Your goal: retrieve the amulet from the vault and carry it back to the
+; entrance hall. You'll need light for the underground, and a key for
+; the vault door.
+; ============================================================================
+
+(define (>= a b) (or (> a b) (= a b)))
+
+; ----------------------------------------------------------------------------
+; The DSL: defroom expands into a registration onto the `rooms` alist
+; ----------------------------------------------------------------------------
+
+(define rooms '())
+
+; (defroom name "description" (exits (dir target) ...) (items thing ...))
+; Every argument arrives unevaluated; the template quotes the structured
+; parts and threads the global room table through a define.
+(defmacro (defroom name desc exits items)
+  `(define rooms (room-register rooms ',name ,desc ',exits ',items)))
+
+(define (room-register table name desc exits items)
+  (cons (list name desc (cdr exits) (cdr items)) table))
+
+(define (room-get table name) (assoc name table))
+(define (room-desc room) (nth room 1))
+(define (room-exits room) (nth room 2))
+(define (room-items-initial room) (nth room 3))
+
+; ----------------------------------------------------------------------------
+; The world (this is the part that reads like a config file)
+; ----------------------------------------------------------------------------
+
+(defroom entrance-hall
+         "The entrance hall of a ruined manor. Dusty light falls from a broken window."
+         (exits (east library) (down cellar))
+         (items))
+
+(defroom library
+         "Collapsed shelves and the smell of old paper. A brass key glints on a desk."
+         (exits (west entrance-hall))
+         (items brass-key))
+
+(defroom cellar
+         "A damp stone cellar. It is very dark down here."
+         (exits (up entrance-hall) (north tunnel))
+         (items lantern))
+
+(defroom tunnel
+         "A narrow tunnel scraped through the earth. The darkness is absolute."
+         (exits (south cellar) (north vault))
+         (items))
+
+(defroom vault
+         "The manor's hidden vault. On a pedestal rests the Amulet of Lispium."
+         (exits (south tunnel))
+         (items amulet))
+
+; Rooms where you can't see (or grab) anything without the lantern
+(define dark-rooms '(cellar tunnel))
+
+; The vault door: passing north from the tunnel needs the brass key
+(define locked-exit '(tunnel north))
+
+; ----------------------------------------------------------------------------
+; Game state: (current-room inventory item-locations won?)
+; item-locations is an alist of (room (item ...))
+; ----------------------------------------------------------------------------
+
+(define (initial-state)
+  (list 'entrance-hall
+        '()
+        (map (lambda (r) (list (car r) (room-items-initial r))) rooms)
+        0))
+
+(define (st-room st) (car st))
+(define (st-inv st) (nth st 1))
+(define (st-locs st) (nth st 2))
+(define (st-won st) (nth st 3))
+
+(define (items-here st) (nth (assoc (st-room st) (st-locs st)) 1))
+
+(define (holding? st item) (member? (st-inv st) item))
+
+(define (member? xs x)
+  (if (null? xs) 0 (if (= (car xs) x) 1 (member? (cdr xs) x))))
+
+(define (remove-one xs x)
+  (if (null? xs)
+    '()
+    (if (= (car xs) x) (cdr xs) (cons (car xs) (remove-one (cdr xs) x)))))
+
+(define (set-room-items locs room items)
+  (map (lambda (e) (if (= (car e) room) (list room items) e)) locs))
+
+(define (dark? st)
+  (and (member? dark-rooms (st-room st)) (not (holding? st 'lantern))))
+
+; ----------------------------------------------------------------------------
+; Commands: each returns (new-state message)
+; ----------------------------------------------------------------------------
+
+(define (describe st)
+  (let ((room (room-get rooms (st-room st))))
+    (if (dark? st)
+      "It is pitch dark. You can't see a thing. (find a light source)"
+      (concat (room-desc room)
+              (items-line (items-here st))
+              (exits-line (room-exits room))))))
+
+(define (items-line items)
+  (if (null? items) "" (concat "\nYou see: " (words items))))
+
+(define (exits-line exits)
+  (concat "\nExits: " (words (map (lambda (e) (car e)) exits))))
+
+(define (words syms)
+  (if (null? syms)
+    ""
+    (if (null? (cdr syms))
+      (number->string (car syms))
+      (concat (number->string (car syms)) " " (words (cdr syms))))))
+
+(define (cmd-go st dir)
+  (let ((exit (assoc dir (room-exits (room-get rooms (st-room st))))))
+    (cond
+      ((not exit) (list st "You can't go that way."))
+      ; The vault door is locked without the brass key
+      ((and (= (st-room st) (car locked-exit))
+            (= dir (nth locked-exit 1))
+            (not (holding? st 'brass-key)))
+        (list st "A heavy iron door blocks the way. It needs a key."))
+      (else (let ((st2 (list (nth exit 1) (st-inv st) (st-locs st) (st-won st))))
+              (list (check-victory st2) (describe st2)))))))
+
+(define (check-victory st)
+  (if (and (= (st-room st) 'entrance-hall) (holding? st 'amulet))
+    (list (st-room st) (st-inv st) (st-locs st) 1)
+    st))
+
+(define (cmd-take st item)
+  (cond
+    ; In the dark you can only find the lantern itself, by touch --
+    ; anything else is unfindable (this keeps the game solvable: the
+    ; lantern is IN a dark room)
+    ((and (dark? st) (not (= item 'lantern)))
+      (list st "You fumble in the dark and find nothing."))
+    ((not (member? (items-here st) item))
+      (list st (concat "There is no " (number->string item) " here.")))
+    (else (list (list (st-room st)
+                      (cons item (st-inv st))
+                      (set-room-items
+                        (st-locs st)
+                        (st-room st)
+                        (remove-one (items-here st) item))
+                      (st-won st))
+                (concat "Taken: " (number->string item))))))
+
+(define (cmd-drop st item)
+  (if (not (holding? st item))
+    (list st (concat "You aren't holding a " (number->string item) "."))
+    (let ((st2 (list (st-room st)
+                     (remove-one (st-inv st) item)
+                     (set-room-items
+                       (st-locs st)
+                       (st-room st)
+                       (cons item (items-here st)))
+                     (st-won st))))
+      (list st2 (concat "Dropped: " (number->string item))))))
+
+(define (cmd-inventory st)
+  (list st
+        (if (null? (st-inv st))
+          "You are empty-handed."
+          (concat "You are carrying: " (words (st-inv st))))))
+
+(define help-text
+  "Commands: look | (go DIR) | (take ITEM) | (drop ITEM) | inventory | quit")
+
+; The dispatcher: a command is a symbol or an s-expression
+(define (do-command st cmd)
+  (cond
+    ((= cmd 'look) (list st (describe st)))
+    ((= cmd 'inventory) (cmd-inventory st))
+    ((= cmd 'i) (cmd-inventory st))
+    ((= cmd 'help) (list st help-text))
+    ((list? cmd)
+      (cond
+        ((= (car cmd) 'go) (cmd-go st (nth cmd 1)))
+        ((= (car cmd) 'take) (cmd-take st (nth cmd 1)))
+        ((= (car cmd) 'drop) (cmd-drop st (nth cmd 1)))
+        (else (list st help-text))))
+    (else (list st help-text))))
+
+; ----------------------------------------------------------------------------
+; The interactive loop
+; ----------------------------------------------------------------------------
+
+(define (play)
+  (begin
+    (print "== THE AMULET OF LISPIUM ==")
+    (print help-text)
+    (print "")
+    (print (describe (initial-state)))
+    (game-loop (initial-state))))
+
+(define (game-loop st)
+  (let ((cmd (read)))
+    (cond
+      ((= cmd 'eof) (print "(end of input)"))
+      ((= cmd 'quit) (print "Farewell."))
+      (else (let ((next (do-command st cmd)))
+              (begin
+                (print (nth next 1))
+                (if (st-won (car next))
+                  (print "\nThe amulet hums as sunlight touches it. YOU WIN.")
+                  (game-loop (car next)))))))))
+
+; ----------------------------------------------------------------------------
+; Scripted walkthrough test suite
+; ----------------------------------------------------------------------------
+
+; Runs commands through the engine, returning the final state
+(define (script st cmds)
+  (if (null? cmds) st (script (car (do-command st (car cmds))) (cdr cmds))))
+
+(define (msg-of st cmd) (nth (do-command st cmd) 1))
+
+(define s0 (initial-state))
+
+; World sanity
+(assert (= (length rooms) 5) "five rooms registered by the DSL")
+(assert (= (st-room s0) 'entrance-hall) "game starts in the entrance hall")
+(assert (null? (st-inv s0)) "start empty-handed")
+
+; Movement and boundaries
+(assert (= (st-room (script s0 '((go east)))) 'library) "east goes to library")
+(assert (= (st-room (script s0 '((go north)))) 'entrance-hall)
+        "invalid direction stays put")
+
+; Taking and dropping
+(define in-library (script s0 '((go east))))
+(define with-key (script in-library '((take brass-key))))
+(assert (holding? with-key 'brass-key) "took the key")
+(assert (not (member? (items-here with-key) 'brass-key))
+        "the key left the room")
+(define dropped (script with-key '((drop brass-key))))
+(assert (not (holding? dropped 'brass-key)) "dropped the key")
+(assert (member? (items-here dropped) 'brass-key) "the key is back in the room")
+
+; Darkness: the cellar hides everything except the lantern itself
+(define in-cellar (script s0 '((go down))))
+(assert (dark? in-cellar) "cellar is dark without a light")
+(assert (= (msg-of in-cellar '(take amulet))
+           "You fumble in the dark and find nothing.")
+        "can't loot a dark room")
+(assert (holding? (script in-cellar '((take lantern))) 'lantern)
+        "the lantern can be found by touch (keeps the game solvable)")
+(assert (not (dark? (script in-cellar '((take lantern)))))
+        "holding the lantern lights the room")
+(assert (= (st-room (script in-cellar '((go up)))) 'entrance-hall)
+        "you can still retreat from a dark room")
+
+; The locked vault door
+(define at-tunnel (script s0 '((go down) (take lantern) (go north))))
+(assert (not (dark? at-tunnel)) "tunnel is lit when holding the lantern")
+(assert (= (msg-of at-tunnel '(go north))
+           "A heavy iron door blocks the way. It needs a key.")
+        "vault needs the key")
+(assert (= (st-room (script at-tunnel '((go north)))) 'tunnel)
+        "locked door really blocks movement")
+
+; The full winning walkthrough
+(define won
+  (script s0
+          '((go east)
+            (take brass-key)
+            (go west)
+            (go down)
+            (take lantern)
+            (go north)
+            (go north)
+            (take amulet)
+            (go south)
+            (go south)
+            (go up))))
+(assert (st-won won) "the full walkthrough wins the game")
+(assert (holding? won 'amulet) "carrying the amulet at the end")
+(assert (= (st-room won) 'entrance-hall) "back at the entrance")
+
+; Inventory reporting
+(assert (= (msg-of with-key 'inventory) "You are carrying: brass-key")
+        "inventory lists items")
+(assert (= (msg-of s0 'inventory) "You are empty-handed.")
+        "empty inventory message")
+
+(print "all adventure engine tests passed")
+(print "")
+
+; Start the game when someone is at the keyboard (a piped run sees eof
+; immediately and exits cleanly)
+(begin (play))

@@ -1984,12 +1984,32 @@ pub fn builtin_or(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
 }
 
 pub fn builtin_not(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
-    // (not a) - logical NOT
+    // (not a) - logical NOT over general truthiness: 0 and the empty
+    // list are false; numbers, non-empty lists, strings, and lambdas are
+    // true. Only inert symbolic operands (bare symbols and expressions
+    // that stayed unevaluated) keep (not ...) symbolic.
     if (args.items.len != 1) return BuiltinError.InvalidArgument;
+    const arg = args.items[0];
 
-    if (args.items[0].* == .number) {
+    const value: ?bool = switch (arg.*) {
+        .number => |n| n != 0,
+        .big => true, // normalized bigs are never zero
+        .string => true,
+        .lambda => true,
+        .list => |lst| blk: {
+            // Non-empty lists are values (data) and truthy — except an
+            // inert symbolic expression is unknowable; but at this point
+            // an evaluated list IS data, so treat emptiness as the test.
+            break :blk lst.items.len != 0 and
+                !(lst.items.len == 1 and lst.items[0].* == .symbol and
+                    std.mem.eql(u8, lst.items[0].symbol, "list"));
+        },
+        .symbol, .owned_symbol => null, // stay symbolic
+    };
+
+    if (value) |v| {
         const result = env.allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        result.* = .{ .number = if (args.items[0].number == 0) 1 else 0 };
+        result.* = .{ .number = if (v) 0 else 1 };
         return result;
     }
 

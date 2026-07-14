@@ -410,6 +410,17 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                     popCall();
                     return call_result;
                 }
+                // A symbol value naming a builtin acts as that builtin
+                // (e.g. a captured (quote +) in operator position)
+                const alias: ?[]const u8 = switch (evaled_op.*) {
+                    .symbol, .owned_symbol => |s| s,
+                    else => null,
+                };
+                if (alias) |a| {
+                    if (env.getBuiltin(a)) |func| {
+                        return try callBuiltin(func, a, expr, env);
+                    } else |_| {}
+                }
                 return Error.UnsupportedOperator;
             }
 
@@ -429,6 +440,19 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                         try callLambda(val, expr.list.items[1..], env, val);
                     popCall();
                     return call_result;
+                }
+                // A variable holding a builtin's name acts as that builtin,
+                // so builtins are first-class enough to pass around:
+                // (define f +) or (define (g f) (f 1 2)) with (g +) work.
+                // Never cached: symbol rebinds don't bump the dispatch gen.
+                const alias: ?[]const u8 = switch (val.*) {
+                    .symbol, .owned_symbol => |s| s,
+                    else => null,
+                };
+                if (alias) |a| {
+                    if (env.getBuiltin(a)) |func| {
+                        return try callBuiltin(func, a, expr, env);
+                    } else |_| {}
                 }
             } else |_| {}
 

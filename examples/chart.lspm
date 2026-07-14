@@ -1,0 +1,193 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; A stdin -> chart pipe tool: pipe numbers in, get summary statistics and
+; an ascii histogram (or an SVG polyline) out.
+; 
+; seq 1 100 | lispium run examples/chart.lspm
+; ... | lispium run examples/chart.lspm -- --bins 15
+; ... | lispium run examples/chart.lspm -- --svg > chart.svg
+; 
+; One number per line. Non-numeric lines are skipped. With no piped
+; input the built-in demo dataset is charted instead, and the assert
+; suite below always runs against fixed data first.
+; ============================================================================
+
+(define (>= a b) (or (> a b) (= a b)))
+(define (<= a b) (or (< a b) (= a b)))
+
+; ----------------------------------------------------------------------------
+; Input: read numbers from stdin until eof
+; ----------------------------------------------------------------------------
+
+(define (read-numbers acc)
+  (let ((v (read)))
+    (if (= v 'eof)
+      (reverse acc)
+      (read-numbers (if (number? v) (cons v acc) acc)))))
+
+; ----------------------------------------------------------------------------
+; Statistics (wrapping the variadic builtins for list input)
+; ----------------------------------------------------------------------------
+
+(define (stats xs)
+  (list (list 'count (length xs))
+        (list 'min (apply min xs))
+        (list 'max (apply max xs))
+        (list 'mean (apply mean xs))
+        (list 'median (apply median xs))
+        (list 'stddev (apply stddev xs))))
+
+(define (stat s key) (nth (assoc key s) 1))
+
+(define (print-stats s)
+  (begin
+    (print "  count " (stat s 'count))
+    (print "  min    " (stat s 'min))
+    (print "  max    " (stat s 'max))
+    (print "  mean   " (stat s 'mean))
+    (print "  median " (stat s 'median))
+    (print "  stddev " (stat s 'stddev))))
+
+; ----------------------------------------------------------------------------
+; Histogram binning
+; ----------------------------------------------------------------------------
+
+; Splits [lo, hi] into n bins; returns a list of (lo hi count) triples
+(define (bin-data xs nbins)
+  (let ((lo (apply min xs)) (hi (apply max xs)))
+    (let ((width (if (= hi lo) 1 (/ (- hi lo) nbins))))
+      (map (lambda (i)
+             (let ((b-lo (+ lo (* i width))) (b-hi (+ lo (* (+ i 1) width))))
+               (list b-lo b-hi (count-in xs b-lo b-hi (= i (- nbins 1))))))
+           (range nbins)))))
+
+; Counts values in [lo, hi) — the last bin is closed on the right
+(define (count-in xs lo hi closed)
+  (length (filter (lambda (x) (and (>= x lo) (if closed (<= x hi) (< x hi))))
+                  xs)))
+
+(define (bin-count b) (nth b 2))
+
+; ----------------------------------------------------------------------------
+; Rendering
+; ----------------------------------------------------------------------------
+
+(define (repeat-str s n) (if (< n 1) "" (concat s (repeat-str s (- n 1)))))
+
+(define (fmt2 x) (evalf (/ (round (evalf (* x 100))) 100)))
+
+(define (print-histogram bins width)
+  (let ((peak (reduce (lambda (acc b) (max acc (bin-count b))) 1 bins)))
+    (begin
+      (map (lambda (b)
+             (print "  "
+                    (fmt2 (car b))
+                    " .. "
+                    (fmt2 (nth b 1))
+                    "  "
+                    (repeat-str "#" (round (* width (/ (bin-count b) peak))))
+                    " "
+                    (bin-count b)))
+           bins)
+      'ok)))
+
+; A minimal SVG polyline of the series (index on x, value on y)
+(define (svg-chart xs w h)
+  (let ((lo (apply min xs)) (hi (apply max xs)) (n (length xs)))
+    (let ((span (if (= hi lo) 1 (- hi lo))))
+      (concat "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\""
+              (number->string w)
+              "\" height=\""
+              (number->string h)
+              "\" viewBox=\"0 0 "
+              (number->string w)
+              " "
+              (number->string h)
+              "\">\n"
+              "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n"
+              "<polyline fill=\"none\" stroke=\"steelblue\" stroke-width=\"2\" points=\""
+              (svg-points xs 0 n lo span w h)
+              "\"/>\n</svg>"))))
+
+(define (svg-points xs i n lo span w h)
+  (if (null? xs)
+    ""
+    (concat (number->string (evalf (* (- w 20) (/ i (max 1 (- n 1))))))
+            ","
+            (number->string
+              (evalf (- (- h 10) (* (- h 20) (/ (- (car xs) lo) span)))))
+            (if (null? (cdr xs)) "" " ")
+            (svg-points (cdr xs) (+ i 1) n lo span w h))))
+
+; ----------------------------------------------------------------------------
+; Argument parsing: --bins N, --svg
+; ----------------------------------------------------------------------------
+
+(define (flag-value flags name default)
+  (if (null? flags)
+    default
+    (if (= (car flags) name)
+      (if (null? (cdr flags)) default (string->number (nth flags 1)))
+      (flag-value (cdr flags) name default))))
+
+(define (has-flag? flags name)
+  (if (null? flags) 0 (if (= (car flags) name) 1 (has-flag? (cdr flags) name))))
+
+; ----------------------------------------------------------------------------
+; Test suite (fixed data, no stdin involved)
+; ----------------------------------------------------------------------------
+
+(define test-data '(2 4 4 4 5 5 7 9))
+(define s (stats test-data))
+
+(assert (= (stat s 'count) 8) "count")
+(assert (= (stat s 'min) 2) "min")
+(assert (= (stat s 'max) 9) "max")
+(assert (= (stat s 'mean) 5) "mean of the classic stddev example")
+(assert (= (stat s 'stddev) 2) "population stddev = 2 exactly")
+(assert (= (stat s 'median) 4.5) "median of even-length data")
+
+(define bins (bin-data test-data 7))
+(assert (= (length bins) 7) "asked for 7 bins, got 7")
+(assert (= (reduce (lambda (acc b) (+ acc (bin-count b))) 0 bins) 8)
+        "every value lands in exactly one bin")
+(assert (= (bin-count (nth bins 6)) 1) "the 9 lands in the last (closed) bin")
+(assert (= (bin-count (nth bins 2)) 3) "the three 4s share a bin")
+
+; Degenerate input: all values equal
+(define flat-bins (bin-data '(5 5 5) 3))
+(assert (= (reduce (lambda (acc b) (+ acc (bin-count b))) 0 flat-bins) 3)
+        "constant data still bins")
+
+; Flags
+(assert (= (flag-value '("--bins" "15") "--bins" 10) 15) "--bins 15 parsed")
+(assert (= (flag-value '("--svg") "--bins" 10) 10) "--bins default")
+(assert (has-flag? '("--svg") "--svg") "--svg detected")
+(assert (not (has-flag? '() "--svg")) "no flags, no --svg")
+
+; SVG output is well-formed enough to open
+(assert (> (length (svg-chart test-data 200 100)) 100) "svg has content")
+
+(print "all chart tool tests passed (reading stdin now, ctrl-d or eof ends)")
+(print "")
+
+; ----------------------------------------------------------------------------
+; Main: read stdin, chart it
+; ----------------------------------------------------------------------------
+
+(begin
+  (define input (read-numbers '()))
+  (define data
+    (if (null? input) '(3 1 4 1 5 9 2 6 5 3 5 8 9 7 9 3 2 3 8 4) input))
+  (define flags (args))
+  (if (null? input)
+    (print "(no piped input; charting the demo dataset - digits of pi)")
+    (print "(read" (length input) "numbers from stdin)"))
+  (print "")
+  (if (has-flag? flags "--svg")
+    (print (svg-chart data 400 160))
+    (begin
+      (print-stats (stats data))
+      (print "")
+      (print-histogram (bin-data data (flag-value flags "--bins" 10)) 36)))
+  'done)

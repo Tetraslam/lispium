@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.15.0] - 2026-07-13
+
+### Added
+- **Four more example programs** (examples/): an RLC circuit analyzer
+  (symbolic transfer function, poles, damping, step/frequency response),
+  a dice probability toolkit (exact rational odds, advantage, 4d6-drop-
+  lowest, notation parser), a text adventure built on a defroom macro
+  DSL over a pure engine, and a stdin-to-chart pipe tool (stats, ascii
+  histogram, SVG polyline).
+- **Builtins are first-class through variables**: a variable or function
+  parameter holding a builtin's name dispatches to it, so
+  `(define f +)`, `(g max 2 3)`, and folding with a passed-in `+` work.
+
+### Fixed
+- `not` uses general truthiness (0 and empty lists are false; data
+  lists, strings, and lambdas are true) instead of going inert on
+  non-numbers, so `(not (assoc ...))` works.
+
 ## [0.14.0] - 2026-07-13
 
 ### Added

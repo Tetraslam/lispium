@@ -49,7 +49,7 @@ ad - bc
 - **A real Lisp** — closures, macros, tail calls, strings, quote/quasiquote, error handling
 - **And more** — number theory, quaternions, finite fields, tensors, plotting, LaTeX export, step-by-step solutions
 
-The [cookbook](cookbook/) has runnable examples for every area, and errors point at the failing subexpression (`file:line:col`, caret in the REPL, call stacks).
+The [cookbook](cookbook/) has runnable snippets for every area, and [examples/](examples/) has eight real programs (a Lisp interpreter, a neural net, a regex engine, a dice odds calculator, a text adventure, ...) — try one with `lispium run examples/dice.lspm --interactive`. Errors point at the failing subexpression (`file:line:col`, caret in the REPL, call stacks).
 
 ## Tooling
 

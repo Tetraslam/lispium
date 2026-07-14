@@ -1,0 +1,222 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; An RLC circuit analyzer: from component values to symbolic transfer
+; function, poles, damping classification, closed-form step response, and
+; a frequency sweep — the workflow of an intro circuits course, automated.
+; 
+; The circuit is the series RLC low-pass: Vin -- R -- L --+-- Vout
+; C
+; |
+; GND
+; Voltage divider over impedances Z_R = R, Z_L = Ls, Z_C = 1/(Cs):
+; 
+; H(s) = Z_C / (Z_R + Z_L + Z_C) = 1 / (L C s^2 + R C s + 1)
+; 
+; Everything downstream is derived, not hardcoded: the poles come from
+; (solve ...) on the symbolic denominator, damping from zeta, responses
+; from the classic closed forms, and the Laplace builtins verify the
+; first-order building blocks.
+; 
+; Run with: lispium run examples/rlc.lspm
+; or:  ... --interactive, then (analyze 100 0.1 0.0001) etc.
+; ============================================================================
+
+(define (>= a b) (or (> a b) (= a b)))
+(define (<= a b) (or (< a b) (= a b)))
+(define pi2 (evalf (* 2 pi)))
+
+; ----------------------------------------------------------------------------
+; The symbolic transfer function
+; ----------------------------------------------------------------------------
+
+; H(s) for a series RLC with the output across C, derived from the
+; impedance divider. R L C stay symbolic here; simplify does the algebra.
+(define transfer-function
+  (simplify (/ (/ 1 (* C s)) (+ R (* L s) (/ 1 (* C s))))))
+
+; The denominator polynomial with numbers plugged in: LC s^2 + RC s + 1
+(define (char-poly r l c) (+ (* l c (^ s 2)) (* r c s) 1))
+
+; Poles of H for concrete component values
+(define (poles r l c) (let ((sols (solve (char-poly r l c) s))) (cdr sols)))
+
+; ----------------------------------------------------------------------------
+; Second-order characteristics
+; ----------------------------------------------------------------------------
+
+(define (omega0 l c) (/ 1 (sqrt (* l c))))  ; natural frequency
+(define (zeta r l c) (* (/ r 2) (sqrt (/ c l))))  ; damping ratio
+(define (q-factor r l c) (/ 1 (* 2 (zeta r l c))))  ; quality factor
+
+(define (damping-class r l c)
+  (let ((z (zeta r l c)))
+    (cond
+      ((< z 0.9999) 'underdamped)
+      ((> z 1.0001) 'overdamped)
+      (else 'critically-damped))))
+
+; ----------------------------------------------------------------------------
+; Step response v_C(t), unit step input, from the classic closed forms
+; ----------------------------------------------------------------------------
+
+(define (step-response r l c t)
+  (let ((w0 (omega0 l c)) (z (zeta r l c)))
+    (cond
+      ; Underdamped: decaying sinusoid at the damped frequency
+      ((= (damping-class r l c) 'underdamped)
+        (let ((wd (* w0 (sqrt (- 1 (* z z))))))
+          (- 1
+             (* (exp (- (* z w0 t)))
+                (+ (cos (* wd t)) (* (/ (* z w0) wd) (sin (* wd t))))))))
+      ; Critically damped: fastest approach with no overshoot
+      ((= (damping-class r l c) 'critically-damped)
+        (- 1 (* (exp (- (* w0 t))) (+ 1 (* w0 t)))))
+      ; Overdamped: two real exponentials
+      (else (let ((root (* w0 (sqrt (- (* z z) 1)))))
+              (let ((p1 (+ (- (* z w0)) root)) (p2 (- (- (* z w0)) root)))
+                (+ 1
+                   (/ (- (* p2 (exp (* p1 t))) (* p1 (exp (* p2 t)))) (- p1 p2)))))))))
+
+; Peak of the step response sampled over a few natural periods
+(define (peak-response r l c)
+  (let ((horizon (/ 10 (omega0 l c))))
+    (reduce (lambda (acc i)
+              (max acc (step-response r l c (* horizon (/ i 200)))))
+            0
+            (range 201))))
+
+; ----------------------------------------------------------------------------
+; Frequency response |H(jw)| via the built-in complex arithmetic
+; ----------------------------------------------------------------------------
+
+(define (h-at r l c w) (magnitude (/ 1 (complex (- 1 (* l c w w)) (* r c w)))))
+
+; Log-spaced sweep returning (vector w |H|) points
+(define (freq-sweep r l c decades points)
+  (let ((w0 (omega0 l c)))
+    (map (lambda (i)
+           (let ((w (* (/ w0 10) (^ 10 (* decades (/ i (- points 1)))))))
+             (vector w (h-at r l c w))))
+         (range points))))
+
+; ----------------------------------------------------------------------------
+; The report
+; ----------------------------------------------------------------------------
+
+(define (analyze r l c)
+  (begin
+    (print "R =" r "ohm   L =" l "H   C =" c "F")
+    (print "  natural frequency w0 ="
+           (omega0 l c)
+           "rad/s"
+           "("
+           (evalf (/ (omega0 l c) pi2))
+           "Hz )")
+    (print "  damping ratio zeta   =" (zeta r l c) "->" (damping-class r l c))
+    (print "  quality factor Q     =" (q-factor r l c))
+    (print "  poles:" (poles r l c))
+    (print "  peak of step response:" (peak-response r l c))
+    'ok))
+
+; ----------------------------------------------------------------------------
+; Test suite: a 1 kOhm / 100 mH / 1 uF reference circuit and friends
+; ----------------------------------------------------------------------------
+
+(print "== RLC circuit analyzer ==")
+(print "")
+(print "symbolic transfer function (output across C):")
+(print "  H(s) =" transfer-function)
+(print "  (simplify keeps the divider form; the asserts below verify it")
+(print "   equals the canonical 1/(LC s^2 + RC s + 1) numerically)")
+(print "")
+
+; The symbolic derivation must reproduce 1/(LCs^2 + RCs + 1): check it by
+; evaluating both forms at concrete points
+(define (h-symbolic rv lv cv sv)
+  (evalf (substitute (substitute (substitute (substitute transfer-function 'R
+                                                         rv)
+                                             'L
+                                             lv)
+                                 'C
+                                 cv)
+                     's
+                     sv)))
+(define (h-reference rv lv cv sv) (/ 1 (+ (* lv cv sv sv) (* rv cv sv) 1)))
+
+(assert (< (abs (- (h-symbolic 100 0.1 0.0001 50)
+                   (h-reference 100 0.1 0.0001 50)))
+           1e-9)
+        "symbolic H(s) matches 1/(LCs^2+RCs+1) at a sample point")
+(assert (< (abs (- (h-symbolic 30 2 0.5 3) (h-reference 30 2 0.5 3))) 1e-9)
+        "... and at another")
+
+; Underdamped reference: R = 100, L = 0.1 H, C = 1 uF -> zeta ~ 0.158
+(define r1 100)
+(define l1 0.1)
+(define c1 0.000001)
+
+(assert (< (abs (- (omega0 l1 c1) 3162.2776601683795)) 1e-6)
+        "w0 = 1/sqrt(LC) ~ 3162.28 rad/s")
+(assert (= (damping-class r1 l1 c1) 'underdamped) "100 ohm case rings")
+(assert (< (abs (- (q-factor r1 l1 c1) 3.1622776601683795)) 1e-9) "Q ~ 3.16")
+
+; Poles must be a complex-conjugate pair with negative real part -R/2L
+(define ps (poles r1 l1 c1))
+(assert (= (length ps) 2) "two poles")
+(assert (< (abs (- (real (car ps)) -500)) 1e-6) "Re(pole) = -R/2L = -500")
+(assert (< (abs (- (abs (imag (car ps))) 3122.4989991991993)) 1e-3)
+        "Im(pole) = damped frequency")
+(assert (= (real (car ps)) (real (nth ps 1)))
+        "conjugate pair: equal real parts")
+(assert (< (abs (+ (imag (car ps)) (imag (nth ps 1)))) 1e-9)
+        "conjugate pair: opposite imaginary parts")
+
+; Step response: starts at 0, settles at 1, overshoots when underdamped
+(assert (< (abs (step-response r1 l1 c1 0)) 1e-9) "v(0) = 0")
+(assert (< (abs (- (step-response r1 l1 c1 0.02) 1)) 1e-3) "v(inf) -> 1")
+(assert (> (peak-response r1 l1 c1) 1.5) "underdamped: strong overshoot")
+
+; Critically damped: R = 2 sqrt(L/C) ~ 632.46 ohm
+(define rc-crit (* 2 (sqrt (/ l1 c1))))
+(assert (= (damping-class rc-crit l1 c1) 'critically-damped)
+        "R = 2 sqrt(L/C) is critical damping")
+(assert (<= (peak-response rc-crit l1 c1) 1.000001)
+        "critically damped: no overshoot")
+
+; Overdamped: R = 2 kOhm
+(assert (= (damping-class 2000 l1 c1) 'overdamped) "2 kOhm case is sluggish")
+(assert (<= (peak-response 2000 l1 c1) 1.000001) "overdamped: no overshoot")
+(assert (< (abs (- (step-response 2000 l1 c1 0.05) 1)) 1e-2)
+        "overdamped still settles at 1")
+
+; Frequency response: DC gain 1, resonant peak ~ Q, then rolloff
+(assert (< (abs (- (h-at r1 l1 c1 0.001) 1)) 1e-6) "|H| = 1 at DC")
+(assert (> (h-at r1 l1 c1 (omega0 l1 c1)) 3) "resonant peak near Q at w0")
+(assert (< (h-at r1 l1 c1 (* 100 (omega0 l1 c1))) 0.001)
+        "40 dB/decade rolloff far above w0")
+
+; The Laplace builtins verify the first-order building block: an RC
+; low-pass with time constant 1/a has impulse response a e^{-a t}
+(assert (= (laplace (exp (* -2 t)) t s) '(/ 1 (+ s 2)))
+        "laplace of e^{-2t} is 1/(s+2)")
+(assert (= (inv-laplace '(/ 1 (- s -2)) s t) '(exp (* -2 t)))
+        "inv-laplace round-trips the pole at -2")
+
+(print "all RLC analyzer tests passed")
+(print "")
+
+; ----------------------------------------------------------------------------
+; Demo
+; ----------------------------------------------------------------------------
+
+(analyze r1 l1 c1)
+(print "")
+(analyze rc-crit l1 c1)
+(print "")
+(analyze 2000 l1 c1)
+(print "")
+(print "step response of the underdamped circuit (first 6 ms):")
+(plot-points (map (lambda (i)
+                    (let ((tv (* 0.006 (/ i 59))))
+                      (vector (* 1000 tv) (step-response r1 l1 c1 tv))))
+                  (range 60)))

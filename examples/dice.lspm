@@ -1,0 +1,253 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; A dice probability toolkit with EXACT arithmetic.
+; 
+; Distributions are association lists of (value probability) pairs where
+; every probability is an exact rational — computing 4d6-drop-lowest odds
+; as 1/1296-precise fractions, not monte carlo estimates.
+; 
+; (dist-d 6)                         one d6
+; (dist-ndm 3 6)                     3d6 (by convolution)
+; (dist-shift d 2)                   +2 modifier
+; (dist-best-of-2 (dist-d 20))       advantage
+; (dist-worst-of-2 (dist-d 20))      disadvantage
+; (dist-4d6-drop-lowest)             the D&D stat roll
+; (expected d)  (p-at-least d 15)    exact queries
+; (histogram d)                      ascii bars
+; (roll-ndm 3 6)                     an actual (seeded) roll
+; (parse-dice "3d6+2")               tiny parser for dice notation
+; 
+; Run with: lispium run examples/dice.lspm
+; or:  lispium run examples/dice.lspm --interactive to play with it
+; ============================================================================
+
+(define (>= a b) (or (> a b) (= a b)))
+(define (<= a b) (or (< a b) (= a b)))
+
+; ----------------------------------------------------------------------------
+; Distributions: sorted alists of (value probability)
+; ----------------------------------------------------------------------------
+
+; Probability of a value (0 when absent)
+(define (dist-p d v) (let ((hit (assoc v d))) (if hit (nth hit 1) 0)))
+
+(define (dist-values d) (map (lambda (e) (car e)) d))
+
+; Adds probability mass to a value, keeping the alist normalized
+(define (dist-add d v p)
+  (if (null? d)
+    (cons (list v p) '())
+    (if (= (car (car d)) v)
+      (cons (list v (+ p (nth (car d) 1))) (cdr d))
+      (cons (car d) (dist-add (cdr d) v p)))))
+
+; A fair n-sided die: each face 1/n
+(define (dist-d n) (map (lambda (v) (list v (/ 1 n))) (range 1 (+ n 1))))
+
+; A distribution that is always `v`
+(define (dist-const v) (list (list v 1)))
+
+; Combine two independent distributions with a binary function
+(define (dist-combine f da db)
+  (reduce (lambda (acc ea)
+            (reduce (lambda (acc2 eb)
+                      (dist-add acc2
+                                (f (car ea) (car eb))
+                                (* (nth ea 1) (nth eb 1))))
+                    acc
+                    db))
+          '()
+          da))
+
+(define (dist-sum da db) (dist-combine + da db))
+(define (dist-shift d k) (map (lambda (e) (list (+ (car e) k) (nth e 1))) d))
+
+; NdM by repeated convolution
+(define (dist-ndm n m)
+  (if (= n 1) (dist-d m) (dist-sum (dist-d m) (dist-ndm (- n 1) m))))
+
+; Advantage / disadvantage: best or worst of two rolls
+(define (dist-best-of-2 d) (dist-combine max d d))
+(define (dist-worst-of-2 d) (dist-combine min d d))
+
+; 4d6 drop lowest: enumerate all 1296 outcomes exactly
+(define (dist-4d6-drop-lowest)
+  (reduce (lambda (acc a)
+            (reduce (lambda (acc2 b)
+                      (reduce (lambda (acc3 c)
+                                (reduce (lambda (acc4 e)
+                                          (dist-add acc4
+                                                    (- (+ a b c e)
+                                                       (min a b c e))
+                                                    1/1296))
+                                        acc3
+                                        '(1 2 3 4 5 6)))
+                              acc2
+                              '(1 2 3 4 5 6)))
+                    acc
+                    '(1 2 3 4 5 6)))
+          '()
+          '(1 2 3 4 5 6)))
+
+; ----------------------------------------------------------------------------
+; Queries (all exact rationals)
+; ----------------------------------------------------------------------------
+
+(define (total-mass d) (reduce (lambda (acc e) (+ acc (nth e 1))) 0 d))
+
+(define (expected d)
+  (reduce (lambda (acc e) (+ acc (* (car e) (nth e 1)))) 0 d))
+
+(define (p-at-least d target)
+  (reduce (lambda (acc e) (if (>= (car e) target) (+ acc (nth e 1)) acc)) 0 d))
+
+(define (p-exactly d v) (dist-p d v))
+
+; ----------------------------------------------------------------------------
+; Display
+; ----------------------------------------------------------------------------
+
+(define (repeat-str s n) (if (= n 0) "" (concat s (repeat-str s (- n 1)))))
+
+(define (histogram d)
+  ; min/max don't take exact rationals, so bar math happens in floats
+  (let ((peak (reduce (lambda (acc e) (max acc (evalf (nth e 1)))) 0 d)))
+    (begin
+      (map (lambda (e)
+             (print "  "
+                    (car e)
+                    " "
+                    (repeat-str "#" (round (* 40 (/ (evalf (nth e 1)) peak))))
+                    "  "
+                    (evalf (/ (round (evalf (* 10000 (nth e 1)))) 100))
+                    "%"))
+           (sort-by-value d))
+      'ok)))
+
+(define (sort-by-value d)
+  (map (lambda (v) (list v (dist-p d v))) (sort (dist-values d))))
+
+; ----------------------------------------------------------------------------
+; Dice notation parser: "3d6+2", "d20", "2d8-1"
+; ----------------------------------------------------------------------------
+
+(define (parse-dice spec)
+  (let ((plus (split spec "+")))
+    (if (> (length plus) 1)
+      (let ((base (parse-dice-core (nth plus 0))))
+        (list (car base) (nth base 1) (string->number (nth plus 1))))
+      (let ((minus (split spec "-")))
+        (if (> (length minus) 1)
+          (let ((base (parse-dice-core (nth minus 0))))
+            (list (car base) (nth base 1) (- (string->number (nth minus 1)))))
+          (let ((base (parse-dice-core spec))) (list (car base) (nth base 1) 0)))))))
+
+; "3d6" -> (3 6); "d20" -> (1 20)
+(define (parse-dice-core s)
+  (let ((parts (split s "d")))
+    (if (= (nth parts 0) "")
+      (list 1 (string->number (nth parts 1)))
+      (list (string->number (nth parts 0)) (string->number (nth parts 1))))))
+
+(define (dist-of-spec spec)
+  (let ((p (parse-dice spec)))
+    (dist-shift (dist-ndm (car p) (nth p 1)) (nth p 2))))
+
+; ----------------------------------------------------------------------------
+; Actual rolling (seeded, reproducible)
+; ----------------------------------------------------------------------------
+
+(define (roll-d m) (+ 1 (random m)))
+
+(define (roll-ndm n m) (if (= n 0) 0 (+ (roll-d m) (roll-ndm (- n 1) m))))
+
+(define (roll-spec spec)
+  (let ((p (parse-dice spec))) (+ (roll-ndm (car p) (nth p 1)) (nth p 2))))
+
+; ----------------------------------------------------------------------------
+; Test suite
+; ----------------------------------------------------------------------------
+
+(print "== dice probability toolkit (exact rationals) ==")
+(print "")
+
+; Single die basics
+(assert (= (total-mass (dist-d 6)) 1) "d6 probabilities sum to 1")
+(assert (= (dist-p (dist-d 6) 3) 1/6) "each d6 face is exactly 1/6")
+(assert (= (expected (dist-d 6)) 7/2) "E[d6] = 7/2 exactly")
+(assert (= (expected (dist-d 20)) 21/2) "E[d20] = 21/2 exactly")
+
+; Sums by convolution
+(define d2d6 (dist-ndm 2 6))
+(assert (= (total-mass d2d6) 1) "2d6 sums to 1")
+(assert (= (dist-p d2d6 7) 1/6) "P(2d6 = 7) = 1/6 (the classic)")
+(assert (= (dist-p d2d6 2) 1/36) "P(2d6 = 2) = 1/36 (snake eyes)")
+(assert (= (dist-p d2d6 12) 1/36) "P(2d6 = 12) = 1/36 (boxcars)")
+(assert (= (expected d2d6) 7) "E[2d6] = 7 exactly")
+
+(define d3d6 (dist-ndm 3 6))
+(assert (= (expected d3d6) 21/2) "E[3d6] = 21/2")
+(assert (= (dist-p d3d6 3) 1/216) "P(3d6 = 3) = 1/216")
+(assert (= (dist-p d3d6 10) 1/8) "P(3d6 = 10) = 27/216 = 1/8")
+(assert (= (p-at-least d3d6 3) 1) "3d6 is always at least 3")
+
+; Modifiers
+(define d3d6p2 (dist-shift d3d6 2))
+(assert (= (expected d3d6p2) 25/2) "E[3d6+2] = E[3d6] + 2")
+(assert (= (dist-p d3d6p2 5) 1/216) "P(3d6+2 = 5) = P(3d6 = 3)")
+
+; Advantage and disadvantage on a d20
+(define adv (dist-best-of-2 (dist-d 20)))
+(define dis (dist-worst-of-2 (dist-d 20)))
+(assert (= (total-mass adv) 1) "advantage sums to 1")
+(assert (= (dist-p adv 20) 39/400) "P(adv rolls 20) = 39/400")
+(assert (= (dist-p adv 1) 1/400) "P(adv rolls 1) = 1/400")
+(assert (= (expected adv) 553/40) "E[advantage] = 13.825 exactly")
+(assert (= (dist-p dis 1) 39/400) "disadvantage mirrors advantage")
+(assert (= (+ (expected adv) (expected dis)) 21)
+        "E[adv] + E[dis] = 2 E[d20] (symmetry)")
+
+; Chance to beat an armor class: d20 + 5 vs AC 15
+(define attack (dist-shift (dist-d 20) 5))
+(assert (= (p-at-least attack 15) 11/20) "d20+5 vs AC 15 hits 55% exactly")
+(assert (= (p-at-least (dist-shift adv 5) 15) 319/400)
+        "with advantage that jumps to 79.75%")
+
+; The D&D stat roll
+(define stat (dist-4d6-drop-lowest))
+(assert (= (total-mass stat) 1) "4d6-drop-lowest sums to 1")
+(assert (= (expected stat) 15869/1296) "E[4d6 drop lowest] = 15869/1296")
+(assert (= (dist-p stat 18) 21/1296) "P(rolling an 18) = 21/1296")
+(assert (= (dist-p stat 3) 1/1296) "P(rolling a 3) = 1/1296")
+
+; Notation parser
+; NOTE: parse-dice builds its result with (list ...), which is a TAGGED
+; list; comparing against quoted '(3 6 2) would be structurally unequal,
+; so the expected values are built with (list ...) too.
+(assert (= (parse-dice "3d6+2") (list 3 6 2)) "parse 3d6+2")
+(assert (= (parse-dice "d20") (list 1 20 0)) "parse d20")
+(assert (= (parse-dice "2d8-1") (list 2 8 -1)) "parse 2d8-1")
+(assert (= (expected (dist-of-spec "3d6+2")) 25/2) "spec -> distribution")
+
+; Seeded rolls are reproducible and in range
+(random-seed 42)
+(define r1 (roll-spec "3d6+2"))
+(random-seed 42)
+(define r2 (roll-spec "3d6+2"))
+(assert (= r1 r2) "seeded rolls reproduce")
+(assert (and (>= r1 5) (<= r1 20)) "3d6+2 lands in [5, 20]")
+
+(print "all dice toolkit tests passed")
+
+; ----------------------------------------------------------------------------
+; Demo
+; ----------------------------------------------------------------------------
+
+(print "")
+(print "P(2d6 = 7)          =" (dist-p d2d6 7) "=" (evalf (dist-p d2d6 7)))
+(print "E[4d6 drop lowest]  =" (expected stat) "=" (evalf (expected stat)))
+(print "d20+5 vs AC 15      =" (p-at-least attack 15))
+(print "  ... with advantage:" (p-at-least (dist-shift adv 5) 15))
+(print "")
+(print "distribution of 2d6:")
+(histogram d2d6)
