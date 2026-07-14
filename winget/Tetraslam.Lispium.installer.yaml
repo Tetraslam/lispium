@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: Tetraslam.Lispium
-PackageVersion: 0.15.0
+PackageVersion: 0.16.0
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -8,7 +8,7 @@ NestedInstallerFiles:
     PortableCommandAlias: lispium
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/Tetraslam/lispium/releases/download/v0.15.0/lispium-windows-x86_64.zip
-    InstallerSha256: CE43324D61FFC0FE2952D7FDF3003A935E5BC3997E14001E51A3B48CA58D0D3B
+    InstallerUrl: https://github.com/Tetraslam/lispium/releases/download/v0.16.0/lispium-windows-x86_64.zip
+    InstallerSha256: CF0FC8EDA8FA99DFA6D4DAA1A0EDA92D5B081B4F00A1B88608F428E32A0ABDB2
 ManifestType: installer
 ManifestVersion: 1.6.0
