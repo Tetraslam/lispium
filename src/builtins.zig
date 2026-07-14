@@ -7,6 +7,17 @@ const symbolic = @import("symbolic.zig");
 const eval = @import("evaluator.zig").eval;
 const applyFunction = @import("evaluator.zig").applyFunction;
 
+/// Narrows an evaluator error to the builtin error set without masking
+/// user-raised errors as "invalid argument".
+fn builtinError(err: anyerror) BuiltinError {
+    return switch (err) {
+        error.OutOfMemory => BuiltinError.OutOfMemory,
+        error.InvalidArgument => BuiltinError.InvalidArgument,
+        error.Undefined => BuiltinError.Undefined,
+        else => BuiltinError.EvaluationError,
+    };
+}
+
 pub const BuiltinError = error{
     InvalidArgument,
     OutOfMemory,
@@ -9710,10 +9721,7 @@ pub fn builtin_map(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
     // without copying the function per element)
     for (items[start_idx..]) |item| {
         var one_arg = [_]*Expr{item};
-        const eval_result = applyFunction(func, &one_arg, env) catch |err| switch (err) {
-            error.OutOfMemory => return BuiltinError.OutOfMemory,
-            else => return BuiltinError.InvalidArgument,
-        };
+        const eval_result = applyFunction(func, &one_arg, env) catch |err| return builtinError(err);
         result_list.append(allocator, eval_result) catch return BuiltinError.OutOfMemory;
     }
 
@@ -9800,10 +9808,7 @@ pub fn builtin_reduce(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
         const new_acc = applyFunction(func, &two_args, env) catch |err| {
             acc.deinit(allocator);
             allocator.destroy(acc);
-            return switch (err) {
-                error.OutOfMemory => BuiltinError.OutOfMemory,
-                else => BuiltinError.InvalidArgument,
-            };
+            return builtinError(err);
         };
         acc.deinit(allocator);
         allocator.destroy(acc);

@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.13.0] - 2026-07-13
+
+The dogfood release: four long example programs written in Lispium
+(examples/), and every interpreter bug they exposed, fixed.
+
+### Added
+- **examples/**: a metacircular evaluator (a Lisp interpreter in Lispium
+  with closures, cond, mutual recursion), a neural network learning XOR
+  by backpropagation, a regex engine (parser + set-of-positions matcher,
+  no exponential backtracking), and a Turing machine simulator (binary
+  increment, 3-state busy beaver, palindrome recognizer). All
+  self-testing via assert.
+
+### Fixed
+- Parens inside string literals no longer confuse the run-mode statement
+  splitter or the REPL's multi-line detection (escapes honored).
+- Higher-order builtins (map/filter/reduce) bind element VALUES as-is
+  instead of re-evaluating them as code, matching `apply`; list-valued
+  elements like '((f 1) (g 2)) now flow through safely. Errors raised
+  inside map/reduce lambdas propagate instead of masking as "invalid
+  argument".
+- Closure capture quotes captured list/symbol values, so closures over
+  data (alists, quoted trees) no longer re-execute them as applications.
+- `lispium fmt` passes shebang lines through instead of mangling them.
+- simplify flattens nested sums/products and folds constants across
+  levels: (* 4 (* 3 x^2)) -> 12x^2, which also fixes unsimplified nth
+  derivatives.
+- REPL: eigenvalues/roots print as {a, b} sets, -0 is normalized, and
+  persistent history is only written by interactive sessions.
+- bench: the summary box sizes itself to its content; the header is
+  centered.
+
+### Changed
+- README: install with `uv tool install lispium`.
+
 ## [0.12.0] - 2026-07-13
 
 The speed release. Programs run 4-6.5x faster (recursive calls 4.6x,

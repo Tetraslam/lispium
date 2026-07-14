@@ -12,7 +12,7 @@ A symbolic computer algebra system in pure Zig. Zero dependencies.
 ## Install
 
 ```bash
-pip install lispium
+uv tool install lispium
 ```
 
 Or grab a binary from [releases](https://github.com/Tetraslam/lispium/releases) (Linux, macOS, Windows). Also on winget and the AUR (`lispium-bin`).
@@ -56,7 +56,7 @@ The [cookbook](cookbook/) has runnable examples for every area, and errors point
 - `lispium run file.lspm` (`--watch`, `--time`, `--profile`), `lispium test`, `lispium fmt`
 - REPL with line editing, persistent history, `?func` inline docs
 - LSP (`lispium lsp`): hover, completion, diagnostics, rename — powers the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=tetraslam.lispium)
-- Jupyter kernel: `pip install lispium[jupyter]`, then `python -m lispium.kernel install`
+- Jupyter kernel: `uv tool install 'lispium[jupyter]'`, then `python -m lispium.kernel install`
 
 ## Development
 

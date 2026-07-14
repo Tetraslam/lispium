@@ -117,3 +117,12 @@ test "formatter: formatting preserves structure (parse equivalence)" {
 
     try testing.expect(h.symbolic.exprEqual(before, after));
 }
+
+test "formatter: shebang lines pass through verbatim" {
+    const allocator = testing.allocator;
+    const src = "#!/usr/bin/env -S lispium run\n(+ 1   2)\n";
+    const out = try formatter.format(allocator, src);
+    defer allocator.free(out);
+    try testing.expect(std.mem.startsWith(u8, out, "#!/usr/bin/env -S lispium run\n"));
+    try testing.expect(std.mem.indexOf(u8, out, "(+ 1 2)") != null);
+}

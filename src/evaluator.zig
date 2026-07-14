@@ -443,21 +443,23 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
     }
 }
 
-/// Applies a function value to argument expressions. Higher-order
-/// builtins (map, filter, reduce) use this to call lambdas directly
-/// instead of deep-copying the lambda into a synthetic call expression
-/// for every element. The arguments are evaluated by the call, exactly
-/// like a written-out `(f arg ...)`; the caller keeps ownership of both
-/// `func` and the argument expressions.
-pub fn applyFunction(func: *Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
+/// Applies a function value to already-evaluated argument VALUES.
+/// Higher-order builtins (map, filter, reduce) use this to call lambdas
+/// directly instead of deep-copying the lambda into a synthetic call
+/// expression per element. The values are bound as-is (never
+/// re-evaluated: a list value must not be re-run as an application —
+/// same convention as the `apply` builtin). The caller keeps ownership
+/// of both `func` and the values.
+pub fn applyFunction(func: *Expr, arg_values: []*Expr, env: *Env) Error!*Expr {
     if (func.* == .lambda) {
         pushCall(func.lambda.name orelse "<lambda>");
-        const result = try callLambda(func, arg_exprs, env, func);
+        const result = try callLambdaWith(func, arg_values, env, func, .values);
         popCall();
         return result;
     }
     // Symbols (builtin names, function-valued variables) and anything
-    // else: build the call expression and evaluate it normally
+    // else: build (func (quote v) ...) and evaluate it normally; the
+    // quotes keep the values from being re-evaluated
     var call_list: std.ArrayList(*Expr) = .empty;
     errdefer {
         for (call_list.items) |item| {
@@ -466,10 +468,23 @@ pub fn applyFunction(func: *Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
         }
         call_list.deinit(env.allocator);
     }
-    try call_list.ensureTotalCapacityPrecise(env.allocator, arg_exprs.len + 1);
+    try call_list.ensureTotalCapacityPrecise(env.allocator, arg_values.len + 1);
     call_list.appendAssumeCapacity(try symbolic.copyExpr(func, env.allocator));
-    for (arg_exprs) |arg| {
-        call_list.appendAssumeCapacity(try symbolic.copyExpr(arg, env.allocator));
+    for (arg_values) |arg| {
+        const val_copy = try symbolic.copyExpr(arg, env.allocator);
+        errdefer {
+            val_copy.deinit(env.allocator);
+            env.allocator.destroy(val_copy);
+        }
+        var qlist: std.ArrayList(*Expr) = .empty;
+        errdefer qlist.deinit(env.allocator);
+        const q = try env.allocator.create(Expr);
+        q.* = .{ .symbol = "quote" };
+        try qlist.append(env.allocator, q);
+        try qlist.append(env.allocator, val_copy);
+        const wrapped = try env.allocator.create(Expr);
+        wrapped.* = .{ .list = qlist };
+        call_list.appendAssumeCapacity(wrapped);
     }
     const call_expr = try env.allocator.create(Expr);
     call_expr.* = .{ .list = call_list };
@@ -643,7 +658,32 @@ fn captureFreeVars(expr: *const Expr, shadowed: *std.ArrayList([]const u8), env:
                         .owned_symbol => |vs| std.mem.eql(u8, vs, name),
                         else => false,
                     };
-                    if (!is_self) return try symbolic.copyExpr(val, env.allocator);
+                    if (!is_self) {
+                        // Captured VALUES must survive re-evaluation when
+                        // the body runs: lists would be re-evaluated as
+                        // applications and symbols re-resolved, so both
+                        // are wrapped in (quote ...). Numbers, strings,
+                        // and lambdas self-evaluate.
+                        const needs_quote = switch (val.*) {
+                            .list, .symbol, .owned_symbol => true,
+                            else => false,
+                        };
+                        const val_copy = try symbolic.copyExpr(val, env.allocator);
+                        if (!needs_quote) return val_copy;
+                        errdefer {
+                            val_copy.deinit(env.allocator);
+                            env.allocator.destroy(val_copy);
+                        }
+                        var qlist: std.ArrayList(*Expr) = .empty;
+                        errdefer qlist.deinit(env.allocator);
+                        const q = try env.allocator.create(Expr);
+                        q.* = .{ .symbol = "quote" };
+                        try qlist.append(env.allocator, q);
+                        try qlist.append(env.allocator, val_copy);
+                        const wrapped = try env.allocator.create(Expr);
+                        wrapped.* = .{ .list = qlist };
+                        return wrapped;
+                    }
                 }
             }
             return try symbolic.copyExpr(expr, env.allocator);
@@ -1325,8 +1365,17 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
 /// lambda was resolved from (null when the caller owns `lambda`): it must
 /// never be freed mid-call, so rebinding that exact value routes through
 /// the depth-zero graveyard instead.
+/// How callLambda should treat the argument slice: expressions to
+/// evaluate (a written-out call) or already-evaluated values to bind
+/// as-is (higher-order builtins).
+const ArgKind = enum { exprs, values };
+
 fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env, borrowed: ?*const Expr) Error!*Expr {
-    // Evaluate the initial arguments
+    return callLambdaWith(lambda, arg_exprs, env, borrowed, .exprs);
+}
+
+fn callLambdaWith(lambda: *const Expr, arg_exprs: []*Expr, env: *Env, borrowed: ?*const Expr, arg_kind: ArgKind) Error!*Expr {
+    // Evaluate (or copy, for pre-evaluated values) the initial arguments
     var args: std.ArrayList(*Expr) = .empty;
     errdefer {
         for (args.items) |arg| {
@@ -1336,7 +1385,11 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env, borrowed: ?*co
         args.deinit(env.allocator);
     }
     for (arg_exprs) |arg_expr| {
-        try args.append(env.allocator, try eval(arg_expr, env));
+        const value = switch (arg_kind) {
+            .exprs => try eval(arg_expr, env),
+            .values => try symbolic.copyExpr(arg_expr, env.allocator),
+        };
+        try args.append(env.allocator, value);
     }
 
     // Trampoline state: tail calls to lambdas swap `current` and loop

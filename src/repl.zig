@@ -126,7 +126,18 @@ fn countParens(input: []const u8) i32 {
     var depth: i32 = 0;
     var in_string = false;
     var in_comment = false;
+    var escaped = false;
     for (input) |c| {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
         if (c == '\n') in_comment = false;
         if (in_comment) continue;
         if (c == '"') in_string = !in_string;

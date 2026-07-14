@@ -678,14 +678,33 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
             start_line = line_num;
         }
 
-        // Strip trailing comment from non-comment lines
+        // Strip trailing comment and count parens in one string-aware
+        // pass (parens and semicolons inside string literals don't count;
+        // \" escapes are honored)
         var code_end: usize = raw_line.len;
         var in_string = false;
+        var escaped = false;
+        var line_parens: i32 = 0;
         for (raw_line, 0..) |c, i| {
-            if (c == '"') in_string = !in_string;
-            if (c == ';' and !in_string) {
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                in_string = true;
+            } else if (c == ';') {
                 code_end = i;
                 break;
+            } else if (c == '(') {
+                line_parens += 1;
+            } else if (c == ')') {
+                line_parens -= 1;
             }
         }
         const code = std.mem.trimEnd(u8, raw_line[0..code_end], " \t\r");
@@ -696,11 +715,7 @@ fn runFileImpl(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, 
         try expr_buf.appendSlice(allocator, code);
         try expr_buf.append(allocator, '\n');
 
-        // Count parentheses
-        for (code) |c| {
-            if (c == '(') paren_depth += 1;
-            if (c == ')') paren_depth -= 1;
-        }
+        paren_depth += line_parens;
 
         // If balanced (or negative = error), evaluate
         if (paren_depth <= 0) {

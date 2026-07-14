@@ -1,0 +1,242 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; A Turing machine simulator, with three classic machines:
+; 
+; 1. binary-increment  adds 1 to a binary number written on the tape
+; 2. busy-beaver-3     a 3-state busy beaver champion (writes six 1s)
+; 3. palindrome        accepts binary palindromes, rejects the rest
+; 
+; Representation:
+; - The tape is a zipper (left current right): `left` holds everything
+; to the left of the head in REVERSED order, so moving is O(1).
+; - Blank cells are the symbol B; moving past either end grows the tape.
+; - A machine is an association list of transitions:
+; ((state symbol) (new-state write-symbol move))     move: L R S
+; - Machines halt by entering the states halt, accept, or reject; the
+; runner also carries fuel so a runaway machine can't loop forever.
+; 
+; Run with: lispium run examples/turing.lspm
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; Tape zipper
+; ----------------------------------------------------------------------------
+
+(define blank 'B)
+
+; Builds a tape from a list of symbols, head on the first cell
+(define (make-tape symbols)
+  (if (null? symbols)
+    (list '() blank '())
+    (list '() (car symbols) (cdr symbols))))
+
+(define (tape-left tape) (car tape))
+(define (tape-head tape) (nth tape 1))
+(define (tape-right tape) (nth tape 2))
+
+(define (tape-write tape sym) (list (tape-left tape) sym (tape-right tape)))
+
+(define (tape-move tape dir)
+  (cond
+    ((= dir 'S) tape)
+    ((= dir 'L)
+      (if (null? (tape-left tape))
+        (list '() blank (cons (tape-head tape) (tape-right tape)))
+        (list (cdr (tape-left tape))
+              (car (tape-left tape))
+              (cons (tape-head tape) (tape-right tape)))))
+    ((= dir 'R)
+      (if (null? (tape-right tape))
+        (list (cons (tape-head tape) (tape-left tape)) blank '())
+        (list (cons (tape-head tape) (tape-left tape))
+              (car (tape-right tape))
+              (cdr (tape-right tape)))))
+    (else (error "tm: bad move direction"))))
+
+; The whole tape as a list, trimming outer blanks
+(define (tape-cells tape)
+  (trim-blanks (append (reverse (tape-left tape))
+                       (cons (tape-head tape) (tape-right tape)))))
+
+(define (trim-blanks cells)
+  (reverse (drop-blanks (reverse (drop-blanks cells)))))
+
+(define (drop-blanks cells)
+  (if (and (not (null? cells)) (= (car cells) blank))
+    (drop-blanks (cdr cells))
+    cells))
+
+; Renders the tape with the head position bracketed: 1 0 [1] 1
+(define (tape-render tape)
+  (concat (render-cells (reverse (tape-left tape)))
+          "["
+          (number->string (tape-head tape))
+          "] "
+          (render-cells (tape-right tape))))
+
+(define (render-cells cells)
+  (reduce (lambda (acc c) (concat acc (number->string c) " ")) "" cells))
+
+; ----------------------------------------------------------------------------
+; The machine runner
+; ----------------------------------------------------------------------------
+
+(define (halted? state)
+  (or (= state 'halt) (= state 'accept) (= state 'reject)))
+
+; One transition step; returns (new-state new-tape) or raises on a
+; missing transition (a stuck machine is a bug in the machine).
+; The lookup key is built with quasiquote so it is a plain (untagged)
+; list, structurally equal to the quoted keys in the rule table.
+(define (tm-step rules state tape)
+  (let ((rule (assoc `(,state ,(tape-head tape)) rules)))
+    (if rule
+      (let ((action (nth rule 1)))
+        (list (car action)
+              (tape-move (tape-write tape (nth action 1)) (nth action 2))))
+      (error (concat "tm: no transition for state "
+                     (number->string state)
+                     " reading "
+                     (number->string (tape-head tape)))))))
+
+; Runs to a halting state (tail recursive); returns (state tape steps)
+(define (tm-run rules state tape fuel steps)
+  (cond
+    ((halted? state) (list state tape steps))
+    ((= fuel 0) (error "tm: out of fuel (runaway machine?)"))
+    (else (let ((next (tm-step rules state tape)))
+            (tm-run rules (car next) (nth next 1) (- fuel 1) (+ steps 1))))))
+
+(define (run-machine rules start-state input fuel)
+  (tm-run rules start-state (make-tape input) fuel 0))
+
+(define (result-state r) (car r))
+(define (result-tape r) (nth r 1))
+(define (result-steps r) (nth r 2))
+(define (result-cells r) (tape-cells (result-tape r)))
+
+; ----------------------------------------------------------------------------
+; Machine 1: binary increment
+; 
+; The head starts on the most significant bit. Strategy: run to the
+; rightmost bit, then propagate the carry left, flipping 1s to 0s until
+; a 0 (or a blank, for all-1 numbers) absorbs it.
+; ----------------------------------------------------------------------------
+
+(define binary-increment
+  '(((right 0) (right 0 R))
+    ((right 1) (right 1 R))
+    ((right B) (carry B L))
+    ((carry 1) (carry 0 L))
+    ((carry 0) (halt 1 S))
+    ((carry B) (halt 1 S))))
+
+(define (increment bits)
+  (result-cells (run-machine binary-increment 'right bits 1000)))
+
+(print "== turing machine simulator ==")
+(print "")
+(print "binary increment:")
+(print "  1 0 1 1 + 1 =>" (increment '(1 0 1 1)))
+(print "  1 1 1 + 1   =>" (increment '(1 1 1)))
+
+(assert (= (increment '(1 0 1 1)) '(1 1 0 0)) "1011 + 1 = 1100")
+(assert (= (increment '(1 1 1)) '(1 0 0 0)) "111 + 1 = 1000 (carry growth)")
+(assert (= (increment '(0)) '(1)) "0 + 1 = 1")
+(assert (= (increment '(1 0)) '(1 1)) "10 + 1 = 11")
+
+; ----------------------------------------------------------------------------
+; Machine 2: the 3-state busy beaver
+; 
+; The famous champion: starting from an all-blank tape it writes the
+; maximum six 1s and halts (13 transitions with our counting, which
+; includes the final move into halt). Blanks play the role of 0.
+; ----------------------------------------------------------------------------
+
+(define busy-beaver-3
+  '(((a B) (b 1 R))
+    ((a 1) (c 1 L))
+    ((b B) (a 1 L))
+    ((b 1) (b 1 R))
+    ((c B) (b 1 L))
+    ((c 1) (halt 1 S))))
+
+(define bb-result (run-machine busy-beaver-3 'a '() 100))
+
+(print "")
+(print "3-state busy beaver (from an empty tape):")
+(print "  final tape:" (result-cells bb-result))
+(print "  steps:" (result-steps bb-result))
+
+(assert (= (result-cells bb-result) '(1 1 1 1 1 1)) "busy beaver writes six 1s")
+(assert (= (result-steps bb-result) 13)
+        "busy beaver halts in exactly 13 transitions")
+
+; ----------------------------------------------------------------------------
+; Machine 3: binary palindrome recognizer
+; 
+; Classic bouncing strategy: erase the first symbol, run to the last
+; symbol, check it matches, erase it, bounce back. Accept when the tape
+; empties (or one lone symbol remains).
+; ----------------------------------------------------------------------------
+
+(define palindrome
+  '(; Read (and erase) the leftmost symbol
+    ((start 0) (seek0 B R))
+    ((start 1) (seek1 B R))
+    ((start B) (accept B S))
+    ; Run right to the end, remembering what must match
+    ((seek0 0) (seek0 0 R))
+    ((seek0 1) (seek0 1 R))
+    ((seek0 B) (check0 B L))
+    ((seek1 0) (seek1 0 R))
+    ((seek1 1) (seek1 1 R))
+    ((seek1 B) (check1 B L))
+    ; Check the rightmost symbol
+    ((check0 0) (rewind B L))
+    ((check0 1) (reject 1 S))
+    ((check0 B) (accept B S))  ; single symbol left: it matches itself
+    ((check1 1) (rewind B L))
+    ((check1 0) (reject 0 S))
+    ((check1 B) (accept B S))
+    ; Rewind to the (new) left end and start over
+    ((rewind 0) (rewind 0 L))
+    ((rewind 1) (rewind 1 L))
+    ((rewind B) (start B R))))
+
+(define (palindrome? bits)
+  (= (result-state (run-machine palindrome 'start bits 10000)) 'accept))
+
+(print "")
+(print "binary palindrome recognizer:")
+(print "  1 0 0 1 =>" (if (palindrome? '(1 0 0 1)) "accept" "reject"))
+(print "  1 0 1 0 =>" (if (palindrome? '(1 0 1 0)) "accept" "reject"))
+
+(assert (palindrome? '()) "empty string is a palindrome")
+(assert (palindrome? '(1)) "single symbol is a palindrome")
+(assert (palindrome? '(1 1)) "11 is a palindrome")
+(assert (palindrome? '(1 0 0 1)) "1001 is a palindrome")
+(assert (palindrome? '(1 0 1 0 1)) "10101 is a palindrome (odd length)")
+(assert (not (palindrome? '(1 0))) "10 is not a palindrome")
+(assert (not (palindrome? '(1 0 1 0))) "1010 is not a palindrome")
+(assert (not (palindrome? '(1 1 0))) "110 is not a palindrome")
+
+; A runaway machine burns its fuel instead of hanging
+(define runaway '(((a B) (a B R))))
+(assert (= (try (run-machine runaway 'a '() 50) 'out-of-fuel) 'out-of-fuel)
+        "runaway machines run out of fuel")
+
+(print "")
+(print "all turing machine tests passed")
+
+; Demo: watch the busy beaver's head bracket move
+(print "")
+(print "demo: busy beaver trace (first 5 steps)")
+(define (trace rules state tape n)
+  (if (or (= n 0) (halted? state))
+    'done
+    (let ((next (tm-step rules state tape)))
+      (begin
+        (print " " state "=>" (tape-render (nth next 1)))
+        (trace rules (car next) (nth next 1) (- n 1))))))
+(trace busy-beaver-3 'a (make-tape '()) 5)

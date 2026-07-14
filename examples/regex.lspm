@@ -1,0 +1,260 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; A regular expression engine: recursive-descent parser + set-of-positions
+; matcher (the functional cousin of Thompson's NFA simulation).
+; 
+; Supported syntax:
+; a b c ...   literal characters
+; .           any single character
+; e*          zero or more
+; e+          one or more
+; e?          zero or one
+; e1|e2       alternation
+; ( e )       grouping
+; 
+; Design:
+; - parse-regex turns the pattern string into an AST of tagged lists:
+; (chr "a") (any) (seq L R) (alt L R) (star E) (plus E) (opt E) (eps)
+; - The matcher computes the SET of string positions reachable after
+; consuming an AST node, starting from a set of positions. Working on
+; whole position sets at once (like NFA simulation) means no
+; backtracking and no exponential blowups on patterns like (a|a)*.
+; - Characters are 1-character strings via substring; no char type
+; needed.
+; 
+; Run with: lispium run examples/regex.lspm
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; Character helpers (strings all the way down)
+; ----------------------------------------------------------------------------
+
+; Lispium ships < > = as builtins; >= is derived
+(define (>= a b) (or (> a b) (= a b)))
+
+(define (char-at s i) (substring s i (+ i 1)))
+
+; ----------------------------------------------------------------------------
+; Parser: pattern string -> AST
+; 
+; Grammar:  alt  := seq ('|' seq)*
+; seq  := rep*
+; rep  := atom ('*' | '+' | '?')?
+; atom := '(' alt ')' | '.' | literal
+; 
+; Each parse function returns (ast next-position).
+; ----------------------------------------------------------------------------
+
+(define (parse-regex pattern)
+  (let ((result (parse-alt pattern 0)))
+    (if (= (nth result 1) (length pattern))
+      (car result)
+      (error (concat "regex: unexpected character at position "
+                     (number->string (nth result 1)))))))
+
+(define (parse-alt pattern pos)
+  (parse-alt-rest pattern (parse-seq pattern pos)))
+
+(define (parse-alt-rest pattern left)
+  (let ((ast (car left)) (pos (nth left 1)))
+    (if (and (< pos (length pattern)) (= (char-at pattern pos) "|"))
+      (let ((right (parse-seq pattern (+ pos 1))))
+        (parse-alt-rest
+          pattern
+          (list (list 'alt ast (car right)) (nth right 1))))
+      left)))
+
+(define (parse-seq pattern pos)
+  (if (or (>= pos (length pattern))
+          (= (char-at pattern pos) "|")
+          (= (char-at pattern pos) ")"))
+    (list '(eps) pos)
+    (parse-seq-rest pattern (parse-rep pattern pos))))
+
+(define (parse-seq-rest pattern left)
+  (let ((ast (car left)) (pos (nth left 1)))
+    (if (or (>= pos (length pattern))
+            (= (char-at pattern pos) "|")
+            (= (char-at pattern pos) ")"))
+      left
+      (let ((right (parse-rep pattern pos)))
+        (parse-seq-rest
+          pattern
+          (list (list 'seq ast (car right)) (nth right 1)))))))
+
+(define (parse-rep pattern pos)
+  (let ((atom (parse-atom pattern pos)))
+    (let ((ast (car atom)) (next (nth atom 1)))
+      (if (>= next (length pattern))
+        atom
+        (let ((c (char-at pattern next)))
+          (cond
+            ((= c "*") (list (list 'star ast) (+ next 1)))
+            ((= c "+") (list (list 'plus ast) (+ next 1)))
+            ((= c "?") (list (list 'opt ast) (+ next 1)))
+            (else atom)))))))
+
+(define (parse-atom pattern pos)
+  (if (>= pos (length pattern))
+    (error "regex: unexpected end of pattern")
+    (let ((c (char-at pattern pos)))
+      (cond
+        ((= c "(")
+          (let ((inner (parse-alt pattern (+ pos 1))))
+            (if (and (< (nth inner 1) (length pattern))
+                     (= (char-at pattern (nth inner 1)) ")"))
+              (list (car inner) (+ (nth inner 1) 1))
+              (error "regex: missing closing paren"))))
+        ((= c ".") (list '(any) (+ pos 1)))
+        ((= c ")") (error "regex: unexpected closing paren"))
+        ((= c "*") (error "regex: nothing to repeat"))
+        ((= c "+") (error "regex: nothing to repeat"))
+        ((= c "?") (error "regex: nothing to repeat"))
+        ((= c "|") (error "regex: empty alternative"))
+        (else (list (list 'chr c) (+ pos 1)))))))
+
+; ----------------------------------------------------------------------------
+; Matcher: AST x position set -> position set
+; ----------------------------------------------------------------------------
+
+(define (set-member? xs x)
+  (if (null? xs) 0 (if (= (car xs) x) 1 (set-member? (cdr xs) x))))
+
+(define (set-add xs x) (if (set-member? xs x) xs (cons x xs)))
+
+(define (set-union a b) (reduce set-add a b))
+
+(define (ast-tag ast) (car ast))
+
+; All positions reachable by matching `ast` starting from any position in
+; `starts` against string s
+(define (match-ast ast s starts)
+  (cond
+    ((= (ast-tag ast) 'eps) starts)
+    ((= (ast-tag ast) 'chr)
+      (advance-matching starts s (lambda (c) (= c (nth ast 1)))))
+    ((= (ast-tag ast) 'any) (advance-matching starts s (lambda (c) 1)))
+    ((= (ast-tag ast) 'seq)
+      (match-ast (nth ast 2) s (match-ast (nth ast 1) s starts)))
+    ((= (ast-tag ast) 'alt)
+      (set-union (match-ast (nth ast 1) s starts)
+                 (match-ast (nth ast 2) s starts)))
+    ((= (ast-tag ast) 'opt) (set-union starts (match-ast (nth ast 1) s starts)))
+    ((= (ast-tag ast) 'star) (match-closure (nth ast 1) s starts))
+    ((= (ast-tag ast) 'plus)
+      (match-closure (nth ast 1) s (match-ast (nth ast 1) s starts)))
+    (else (error "regex: unknown AST node"))))
+
+; Positions that advance by one character satisfying pred
+(define (advance-matching starts s pred)
+  (reduce (lambda (acc pos)
+            (if (and (< pos (length s)) (pred (char-at s pos)))
+              (set-add acc (+ pos 1))
+              acc))
+          '()
+          starts))
+
+; Kleene closure: expand the position set to a fixed point
+(define (match-closure ast s starts)
+  (let ((next (set-union starts (match-ast ast s starts))))
+    (if (= (length next) (length starts)) starts (match-closure ast s next))))
+
+; Anchored full match: does the pattern consume the whole string?
+(define (regex-match? pattern s)
+  (set-member? (match-ast (parse-regex pattern) s '(0)) (length s)))
+
+; ----------------------------------------------------------------------------
+; Test suite
+; ----------------------------------------------------------------------------
+
+(define (expect-match pattern s)
+  (assert (regex-match? pattern s)
+          (concat "expected /" pattern "/ to match \"" s "\"")))
+
+(define (expect-no-match pattern s)
+  (assert (not (regex-match? pattern s))
+          (concat "expected /" pattern "/ NOT to match \"" s "\"")))
+
+(print "== regex engine ==")
+
+; Literals
+(expect-match "abc" "abc")
+(expect-no-match "abc" "abd")
+(expect-no-match "abc" "ab")
+(expect-no-match "abc" "abcd")
+(expect-match "" "")
+(expect-no-match "" "a")
+
+; Any character
+(expect-match "a.c" "abc")
+(expect-match "a.c" "axc")
+(expect-no-match "a.c" "ac")
+(expect-match "..." "xyz")
+(expect-no-match "..." "xy")
+
+; Star
+(expect-match "ab*c" "ac")
+(expect-match "ab*c" "abc")
+(expect-match "ab*c" "abbbbc")
+(expect-no-match "ab*c" "adc")
+(expect-match "a*" "")
+(expect-match "a*" "aaaa")
+(expect-no-match "a*" "aaab")
+
+; Plus
+(expect-match "ab+c" "abc")
+(expect-match "ab+c" "abbbc")
+(expect-no-match "ab+c" "ac")
+
+; Optional
+(expect-match "colou?r" "color")
+(expect-match "colou?r" "colour")
+(expect-no-match "colou?r" "colouur")
+
+; Alternation
+(expect-match "cat|dog" "cat")
+(expect-match "cat|dog" "dog")
+(expect-no-match "cat|dog" "cow")
+(expect-match "a|b|c" "b")
+
+; Grouping
+(expect-match "(ab)*" "")
+(expect-match "(ab)*" "ababab")
+(expect-no-match "(ab)*" "aba")
+(expect-match "(a|b)c" "ac")
+(expect-match "(a|b)c" "bc")
+(expect-no-match "(a|b)c" "cc")
+(expect-match "a(b|c)*d" "ad")
+(expect-match "a(b|c)*d" "abcbcd")
+(expect-no-match "a(b|c)*d" "abxd")
+
+; Nested quantifiers and the classic pathological case: the set-based
+; matcher handles (a*)* patterns without exponential backtracking
+(expect-match "(a*)*b" "aaaaaaaaaaaaaaaaaaaab")
+(expect-no-match "(a*)*b" "aaaaaaaaaaaaaaaaaaaa")
+(expect-match "(a|aa)*" "aaaaaaaaaa")
+
+; Realistic shapes
+(expect-match "(0|1)+" "110101")
+(expect-no-match "(0|1)+" "")
+(expect-no-match "(0|1)+" "102")
+(expect-match "ab?c?d" "ad")
+(expect-match "ab?c?d" "abcd")
+(expect-match "x(yz|w.)+x" "xyzw1w2x")
+(expect-no-match "x(yz|w.)+x" "xx")
+
+; Parse errors are real errors (recoverable with try)
+(assert (= (try (regex-match? "a(b" "ab") 'parse-error) 'parse-error)
+        "unclosed group is a parse error")
+(assert (= (try (regex-match? "*a" "a") 'parse-error) 'parse-error)
+        "leading star is a parse error")
+
+(print "all regex engine tests passed")
+
+; Demo
+(print "")
+(print "demo: /(0|1)+/ matches \"110101\" =>" (regex-match? "(0|1)+" "110101"))
+(print "demo: /a(b|c)*d/ matches \"abcbcd\" =>"
+       (regex-match? "a(b|c)*d" "abcbcd"))
+(print "demo: AST of a(b|c)*d =>")
+(print (parse-regex "a(b|c)*d"))

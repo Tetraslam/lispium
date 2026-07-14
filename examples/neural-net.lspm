@@ -1,0 +1,141 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; A neural network from scratch: a 2-3-1 multilayer perceptron learning XOR
+; by backpropagation, in pure list arithmetic.
+; 
+; - Architecture: 2 inputs -> 3 hidden neurons (sigmoid) -> 1 output
+; (sigmoid). XOR is the classic "you need a hidden layer" function.
+; - A neuron is (bias w1 w2 ...): the bias followed by one weight per
+; input. A layer is a list of neurons. The network is (hidden output).
+; - Training is plain stochastic gradient descent: for each sample,
+; forward pass, then backpropagate the squared-error gradient and
+; return a new network (no mutation anywhere).
+; - Weights start at small fixed asymmetric values so the run is
+; deterministic and the assertions below always hold.
+; 
+; Run with: lispium run examples/neural-net.lspm
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; Small list helpers
+; ----------------------------------------------------------------------------
+
+(define (zip a b)
+  (if (or (null? a) (null? b))
+    '()
+    (cons (list (car a) (car b)) (zip (cdr a) (cdr b)))))
+
+(define (sum xs) (reduce + 0 xs))
+
+(define (dot-lists xs ys)
+  (sum (map (lambda (p) (* (car p) (nth p 1))) (zip xs ys))))
+
+; ----------------------------------------------------------------------------
+; The network
+; ----------------------------------------------------------------------------
+
+(define (sigmoid z) (/ 1 (+ 1 (exp (- z)))))
+
+; A neuron is (bias w1 w2 ...); activation over the input list
+(define (neuron-fire neuron inputs)
+  (sigmoid (+ (car neuron) (dot-lists (cdr neuron) inputs))))
+
+(define (layer-fire layer inputs)
+  (map (lambda (neuron) (neuron-fire neuron inputs)) layer))
+
+; Forward pass: returns (hidden-activations output-activation)
+(define (forward net inputs)
+  (let ((hidden (layer-fire (car net) inputs)))
+    (list hidden (neuron-fire (car (nth net 1)) hidden))))
+
+(define (predict net inputs) (nth (forward net inputs) 1))
+
+; ----------------------------------------------------------------------------
+; Backpropagation (squared error, sigmoid derivative o*(1-o))
+; ----------------------------------------------------------------------------
+
+; Updates one neuron given its delta, its inputs, and the learning rate:
+; bias' = bias + lr*delta, w_i' = w_i + lr*delta*input_i
+(define (neuron-update neuron delta inputs lr)
+  (cons (+ (car neuron) (* lr delta))
+        (map (lambda (p) (+ (car p) (* lr delta (nth p 1))))
+             (zip (cdr neuron) inputs))))
+
+; One SGD step on a single (inputs target) sample; returns the new net
+(define (train-sample net inputs target lr)
+  (let ((state (forward net inputs)))
+    (let ((hidden (car state)) (out (nth state 1)))
+      (let ((out-neuron (car (nth net 1)))
+            (out-delta (* (- target out) out (- 1 out))))
+        ; Hidden deltas: delta_j = h_j (1 - h_j) v_j out-delta, where v_j
+        ; is the output neuron's weight for hidden neuron j
+        (let ((hidden-deltas
+                (map (lambda (p)
+                       (let ((h (car p)) (v (nth p 1)))
+                         (* h (- 1 h) v out-delta)))
+                     (zip hidden (cdr out-neuron)))))
+          (list
+                ; New hidden layer
+                (map (lambda (p) (neuron-update (car p) (nth p 1) inputs lr))
+                     (zip (car net) hidden-deltas))
+                ; New output layer
+                (list (neuron-update out-neuron out-delta hidden lr))))))))
+
+; One epoch: fold every training sample through train-sample
+(define (train-epoch net samples lr)
+  (reduce (lambda (n s) (train-sample n (car s) (nth s 1) lr)) net samples))
+
+; Full training loop (tail recursive; reports loss every `report` epochs)
+(define (train net samples lr epochs report)
+  (if (= epochs 0)
+    net
+    (begin
+      (if (= (mod epochs report) 0)
+        (print "  epochs left:" epochs "  loss:" (total-loss net samples))
+        0)
+      (train (train-epoch net samples lr) samples lr (- epochs 1) report))))
+
+(define (total-loss net samples)
+  (sum (map (lambda (s)
+              (let ((err (- (nth s 1) (predict net (car s))))) (* err err)))
+            samples)))
+
+; ----------------------------------------------------------------------------
+; XOR
+; ----------------------------------------------------------------------------
+
+(define xor-samples '(((0 0) 0) ((0 1) 1) ((1 0) 1) ((1 1) 0)))
+
+; Deterministic asymmetric starting weights (breaking symmetry is the
+; whole trick: identical neurons would learn identical features)
+(define initial-net
+  '(((0.1 0.4 -0.3) (-0.2 -0.5 0.6) (0.3 0.2 0.4)) ((0.2 0.5 -0.4 0.3))))
+
+(print "== neural network: learning XOR by backpropagation ==")
+(print "architecture: 2 inputs -> 3 hidden (sigmoid) -> 1 output (sigmoid)")
+(print "initial loss:" (total-loss initial-net xor-samples))
+(print "")
+
+(define trained (train initial-net xor-samples 2.5 4000 500))
+
+(print "")
+(print "final loss:" (total-loss trained xor-samples))
+(print "")
+(print "predictions:")
+(print "  0 XOR 0 =>" (predict trained '(0 0)))
+(print "  0 XOR 1 =>" (predict trained '(0 1)))
+(print "  1 XOR 0 =>" (predict trained '(1 0)))
+(print "  1 XOR 1 =>" (predict trained '(1 1)))
+
+; The network must be confidently right on all four cases
+(assert (< (predict trained '(0 0)) 0.1) "0 xor 0 should be near 0")
+(assert (> (predict trained '(0 1)) 0.9) "0 xor 1 should be near 1")
+(assert (> (predict trained '(1 0)) 0.9) "1 xor 0 should be near 1")
+(assert (< (predict trained '(1 1)) 0.1) "1 xor 1 should be near 0")
+
+; Training must have reduced the loss by orders of magnitude
+(assert (< (total-loss trained xor-samples) 0.02) "final loss under 0.02")
+(assert (> (total-loss initial-net xor-samples) 0.9) "initial loss near 1")
+
+(print "")
+(print "all neural network tests passed")

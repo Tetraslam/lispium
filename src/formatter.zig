@@ -544,6 +544,19 @@ const Renderer = struct {
 /// Formats Lispium source, returning newly allocated canonical text.
 /// The result always ends with exactly one newline (unless empty).
 pub fn format(allocator: std.mem.Allocator, source: []const u8) Error![]u8 {
+    // A shebang line is passed through verbatim (it isn't Lispium syntax)
+    if (std.mem.startsWith(u8, source, "#!")) {
+        const nl = std.mem.indexOfScalar(u8, source, '\n') orelse source.len;
+        const shebang = source[0 .. nl + @intFromBool(nl < source.len)];
+        const rest = try format(allocator, source[shebang.len..]);
+        defer allocator.free(rest);
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, shebang);
+        try out.appendSlice(allocator, rest);
+        return out.toOwnedSlice(allocator);
+    }
+
     var tokens = try lex(allocator, source);
     defer tokens.deinit(allocator);
 

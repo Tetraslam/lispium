@@ -1,0 +1,297 @@
+#!/usr/bin/env -S lispium run
+; ============================================================================
+; A metacircular evaluator: a Lisp interpreter written in Lispium.
+; 
+; The classic SICP capstone. Programs are quoted data; the interpreter
+; walks them with mc-eval / mc-apply. Design notes:
+; 
+; - Values: numbers, strings, symbols, lists, and two tagged forms:
+; (closure params body env name)   user functions
+; (primitive name)                 host-provided builtins
+; - Environments are association lists of (name value) pairs. Local
+; (lexical) bindings live in the closure's captured environment;
+; top-level definitions live in a global environment that is threaded
+; through the program runner, so top-level functions can call each
+; other (mutual recursion) regardless of definition order.
+; - Special forms: quote, if, cond, lambda, let, begin, define.
+; - No mutation anywhere: define returns an extended global env.
+; - Interpreted programs write list DATA as (quote (1 2 3)), never as
+; (list 1 2 3): the host's car/cdr treat a leading `list` symbol as a
+; value tag, so a source form (list ...) is indistinguishable from a
+; list value. (The `list` primitive still works for BUILDING lists.)
+; 
+; Run with: lispium run examples/metacircular.lspm
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; Tags and constructors
+; ----------------------------------------------------------------------------
+
+(define (make-closure params body env name)
+  (list 'closure params body env name))
+
+(define (closure? v) (if (list? v) (if (null? v) 0 (= (car v) 'closure)) 0))
+
+(define (closure-params c) (nth c 1))
+(define (closure-body c) (nth c 2))
+(define (closure-env c) (nth c 3))
+(define (closure-name c) (nth c 4))
+
+(define (make-primitive name) (list 'primitive name))
+
+(define (primitive? v) (if (list? v) (if (null? v) 0 (= (car v) 'primitive)) 0))
+
+(define (primitive-name p) (nth p 1))
+
+; ----------------------------------------------------------------------------
+; Environments: association lists of (name value) pairs
+; ----------------------------------------------------------------------------
+
+(define (env-bind env name value) (cons (list name value) env))
+
+(define (env-bind-all env names values)
+  (if (null? names)
+    env
+    (env-bind-all (env-bind env (car names) (car values))
+                  (cdr names)
+                  (cdr values))))
+
+; Looks a name up in the local env, then the global env.
+; Returns (value) on success or 0 on failure, so bound zeroes still work.
+(define (env-lookup env genv name)
+  (let ((hit (assoc name env)))
+    (if hit
+      (list (nth hit 1))
+      (let ((ghit (assoc name genv))) (if ghit (list (nth ghit 1)) 0)))))
+
+; ----------------------------------------------------------------------------
+; Syntax predicates
+; ----------------------------------------------------------------------------
+
+(define (self-evaluating? expr) (or (number? expr) (string? expr)))
+
+(define (tagged? expr tag)
+  (if (list? expr) (if (null? expr) 0 (= (car expr) tag)) 0))
+
+; ----------------------------------------------------------------------------
+; mc-eval: the heart of the interpreter
+; ----------------------------------------------------------------------------
+
+(define (mc-eval expr env genv)
+  (cond
+    ((self-evaluating? expr) expr)
+    ((symbol? expr)
+      (let ((found (env-lookup env genv expr)))
+        (if found
+          (car found)
+          (error (concat "mc: unbound variable: " (number->string expr))))))
+    ((tagged? expr 'quote) (nth expr 1))
+    ((tagged? expr 'if) (mc-eval-if expr env genv))
+    ((tagged? expr 'cond) (mc-eval-cond (cdr expr) env genv))
+    ((tagged? expr 'lambda)
+      (make-closure (nth expr 1) (nth expr 2) env 'anonymous))
+    ((tagged? expr 'let) (mc-eval-let expr env genv))
+    ((tagged? expr 'begin) (mc-eval-sequence (cdr expr) env genv))
+    ((tagged? expr 'define)
+      (error "mc: define is only allowed at the top level"))
+    ((list? expr) (mc-eval-application expr env genv))
+    (else (error "mc: unknown expression type"))))
+
+(define (mc-eval-if expr env genv)
+  (if (mc-true? (mc-eval (nth expr 1) env genv))
+    (mc-eval (nth expr 2) env genv)
+    (if (= (length expr) 4) (mc-eval (nth expr 3) env genv) 0)))
+
+; Everything except 0 and the empty list is true
+(define (mc-true? v)
+  (cond ((number? v) (not (= v 0))) ((list? v) (not (null? v))) (else 1)))
+
+(define (mc-eval-cond clauses env genv)
+  (cond
+    ((null? clauses) 0)
+    ((= (car (car clauses)) 'else) (mc-eval (nth (car clauses) 1) env genv))
+    ((mc-true? (mc-eval (car (car clauses)) env genv))
+      (mc-eval (nth (car clauses) 1) env genv))
+    (else (mc-eval-cond (cdr clauses) env genv))))
+
+; (let ((a 1) (b 2)) body) evaluates the binding values in the outer env
+(define (mc-eval-let expr env genv)
+  (let ((bindings (nth expr 1)) (body (nth expr 2)))
+    (mc-eval body
+             (env-bind-all env
+                           (map (lambda (b) (car b)) bindings)
+                           (map (lambda (b) (mc-eval (nth b 1) env genv))
+                                bindings))
+             genv)))
+
+(define (mc-eval-sequence exprs env genv)
+  (cond
+    ((null? exprs) 0)
+    ((null? (cdr exprs)) (mc-eval (car exprs) env genv))
+    (else (begin
+            (mc-eval (car exprs) env genv)
+            (mc-eval-sequence (cdr exprs) env genv)))))
+
+(define (mc-eval-application expr env genv)
+  (let ((f (mc-eval (car expr) env genv))
+        (args (map (lambda (a) (mc-eval a env genv)) (cdr expr))))
+    (mc-apply f args genv)))
+
+; ----------------------------------------------------------------------------
+; mc-apply: closures extend their captured env; primitives dispatch to host
+; ----------------------------------------------------------------------------
+
+(define (mc-apply f args genv)
+  (cond
+    ((closure? f)
+      (let ((frame (env-bind-all (closure-env f) (closure-params f) args)))
+        ; Bind the function's own name so self-recursion works even when
+        ; the closure escaped the environment it was defined in
+        (mc-eval (closure-body f) (env-bind frame (closure-name f) f) genv)))
+    ((primitive? f) (mc-apply-primitive (primitive-name f) args))
+    (else (error "mc: applying a non-function"))))
+
+(define (mc-apply-primitive name args)
+  (cond
+    ((= name '+) (apply + args))
+    ((= name '-) (apply - args))
+    ((= name '*) (apply * args))
+    ((= name '/) (apply / args))
+    ((= name '=) (apply = args))
+    ((= name '<) (apply < args))
+    ((= name '>) (apply > args))
+    ((= name 'mod) (apply mod args))
+    ((= name 'not) (if (mc-true? (car args)) 0 1))
+    ((= name 'car) (car (car args)))
+    ((= name 'cdr) (cdr (car args)))
+    ((= name 'cons) (cons (car args) (nth args 1)))
+    ((= name 'list) args)
+    ((= name 'null?) (if (null? (car args)) 1 0))
+    ((= name 'print) (begin (print (car args)) (car args)))
+    (else (error (concat "mc: unknown primitive")))))
+
+; ----------------------------------------------------------------------------
+; Top level: define handling and the program runner
+; ----------------------------------------------------------------------------
+
+; Evaluates one top-level form against the global env.
+; Returns (value new-genv).
+(define (mc-eval-toplevel expr genv)
+  (if (tagged? expr 'define)
+    (let ((target (nth expr 1)))
+      (if (symbol? target)
+        ; (define name value)
+        (let ((value (mc-eval (nth expr 2) '() genv)))
+          (list value (env-bind genv target value)))
+        ; (define (name params...) body) sugar
+        (let ((name (car target)) (params (cdr target)))
+          (let ((value (make-closure params (nth expr 2) '() name)))
+            (list value (env-bind genv name value))))))
+    (list (mc-eval expr '() genv) genv)))
+
+; Runs a list of top-level forms, returning the value of the last one.
+(define (mc-run-program forms genv)
+  (let ((step (mc-eval-toplevel (car forms) genv)))
+    (if (null? (cdr forms))
+      (car step)
+      (mc-run-program (cdr forms) (nth step 1)))))
+
+(define (mc-global-env)
+  (map (lambda (name) (list name (make-primitive name)))
+       '(+ - * / = < > mod not car cdr cons list null? print)))
+
+(define (mc-run forms) (mc-run-program forms (mc-global-env)))
+
+; ----------------------------------------------------------------------------
+; Test suite: real programs running inside the interpreter
+; ----------------------------------------------------------------------------
+
+(print "== metacircular evaluator ==")
+
+; Atoms and arithmetic
+(assert (= (mc-run '(42)) 42) "self-evaluating number")
+(assert (= (mc-run '((+ 1 2 3))) 6) "primitive addition")
+(assert (= (mc-run '((* (+ 1 2) (- 10 6)))) 12) "nested arithmetic")
+(assert (= (mc-run '((quote hello))) 'hello) "quote")
+
+; Conditionals
+(assert (= (mc-run '((if (> 3 2) 'yes 'no))) 'yes) "if true branch")
+(assert (= (mc-run '((if (< 3 2) 'yes 'no))) 'no) "if false branch")
+(assert (= (mc-run '((cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c)))) 'b) "cond")
+(assert (= (mc-run '((cond ((= 1 2) 'a) (else 'c)))) 'c) "cond else")
+
+; Lambda and let
+(assert (= (mc-run '(((lambda (x y) (+ x y)) 3 4))) 7) "immediate lambda")
+(assert (= (mc-run '((let ((a 2) (b 5)) (* a b)))) 10) "let bindings")
+
+; Definitions and recursion
+(assert (= (mc-run '((define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+                     (fact 10)))
+           3628800)
+        "recursive factorial inside the interpreter")
+
+(assert (= (mc-run '((define (fib n)
+                      (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+                     (fib 12)))
+           144)
+        "naive fibonacci inside the interpreter")
+
+; Mutual recursion through the global environment
+(assert (= (mc-run '((define (even? n) (if (= n 0) 1 (odd? (- n 1))))
+                     (define (odd? n) (if (= n 0) 0 (even? (- n 1))))
+                     (even? 20)))
+           1)
+        "mutual recursion (top-level definitions)")
+
+; Closures capture their defining environment
+(assert (= (mc-run '((define (make-adder n) (lambda (x) (+ x n)))
+                     (define add5 (make-adder 5))
+                     (add5 37)))
+           42)
+        "closures capture lexically")
+
+; Higher-order functions written inside the interpreted language
+(assert (= (mc-run '((define (compose f g) (lambda (x) (f (g x))))
+                     (define (inc x) (+ x 1))
+                     (define (double x) (* x 2))
+                     ((compose inc double) 20)))
+           41)
+        "compose (higher-order functions)")
+
+; List processing: map and fold defined in the interpreted language
+(assert (= (mc-run '((define (my-map f xs)
+                      (if (null? xs)
+                        (quote ())
+                        (cons (f (car xs)) (my-map f (cdr xs)))))
+                     (define (my-fold f acc xs)
+                       (if (null? xs) acc (my-fold f (f acc (car xs)) (cdr xs))))
+                     (my-fold +
+                              0
+                              (my-map (lambda (x) (* x x)) (quote (1 2 3 4 5))))))
+           55)
+        "map + fold written in the interpreted language")
+
+; Shadowing: inner bindings win, outer bindings are untouched
+(assert (= (mc-run '((define x 10) (define (f x) (+ x 1)) (+ (f 1) x))) 12)
+        "lexical shadowing")
+
+; begin sequencing returns the final value
+(assert (= (mc-run '((begin 1 2 3))) 3) "begin returns the last value")
+
+; The interpreter interpreting an interpreter fragment: mc-eval running
+; a program that itself builds and calls closures at two levels deep
+(assert (= (mc-run '((define (twice f) (lambda (x) (f (f x))))
+                     (define (add3 x) (+ x 3))
+                     ((twice (twice add3)) 0)))
+           12)
+        "nested higher-order closures")
+
+(print "all metacircular evaluator tests passed")
+
+; Demo: watch it compute
+(print "")
+(print "demo: (fact 8) inside the interpreter =>"
+       (mc-run '((define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 8))))
+(print "demo: closure counter chain =>"
+       (mc-run '((define (make-adder n) (lambda (x) (+ x n)))
+                 ((make-adder 100) ((make-adder 20) 3)))))
