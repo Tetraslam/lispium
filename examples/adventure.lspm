@@ -340,7 +340,7 @@
         "empty inventory message")
 
 ; The natural-language parser (needs string->symbol + read-line era)
-(assert (= (parse-command "go east") '(go east))
+(assert (= (parse-command "go east") (list 'go 'east))
         "two words parse to (verb target)")
 (assert (= (parse-command "  LOOK  ") 'look) "case and whitespace are forgiven")
 (assert (= (parse-command "take lantern") (list 'take 'lantern)) "take parses")
