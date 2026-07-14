@@ -61,6 +61,8 @@ Lispium is a symbolic computer algebra system (CAS) implemented in pure Zig with
 | `environment.zig` | Symbol table & assumptions |
 | `parser.zig` | Recursive descent parser |
 | `tokenizer.zig` | Lexical scanner |
+| `pool.zig` | Single-threaded free-list allocator (CLI hot path) |
+| `bench.zig` | Benchmark suite (`lispium bench`, --save/--compare) |
 | `src/tests/*.zig` | 532 tests organized by feature |
 
 ---
@@ -202,6 +204,27 @@ pub fn takeErrorPosition() ?[]const u8;
 Names bound by nested lambda/let/letrec/sum/product forms are respected
 (shadowed), and recursive references (the function's own name, letrec
 names) stay symbolic so recursion works.
+
+**Performance architecture** (v0.12.0):
+- The CLI routes all allocation through `pool.zig` (a single-threaded
+  size-class free-list over `smp_allocator`); tests keep using
+  `std.testing.allocator` directly for leak detection.
+- Special forms dispatch through a comptime `StaticStringMap`, not a
+  string-compare chain.
+- Function calls BORROW lambdas from the environment instead of deep
+  copying them per call. Displaced values that might still be executing
+  (self-redefinition, tail calls rebinding their own name) go to
+  `Env.pending_frees`, flushed when eval returns to depth zero. Use
+  `Env.replace` (swap, return old) instead of free-then-`put`: `put`
+  inspects the old value.
+- Operator dispatch uses a threadlocal direct-mapped cache keyed by the
+  op symbol's address, validated by `Env.dispatch_gen` (bumped whenever a
+  lambda binding, macro, builtin, or trace flag changes — number rebinds
+  don't, so loops stay hot).
+- Higher-order builtins (map/filter/reduce) call lambdas directly via
+  `evaluator.applyFunction` instead of building synthetic call exprs.
+- Benchmark with `lispium bench --save before.json`, change things, then
+  `lispium bench --compare before.json` (per-benchmark deltas + geomean).
 
 ### builtins.zig (4,378 lines)
 

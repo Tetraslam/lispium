@@ -6,7 +6,6 @@ const Expr = @import("parser.zig").Expr;
 
 /// LSP Server for Lispium
 /// Implements Language Server Protocol over stdin/stdout using JSON-RPC 2.0
-
 const builtin_docs = @import("lsp/builtin_docs.zig");
 const formatter = @import("formatter.zig");
 const server_version = build_options.version;

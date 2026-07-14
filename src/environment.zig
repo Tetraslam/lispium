@@ -46,6 +46,27 @@ pub const Env = struct {
     macros: ?std.StringHashMap(*Expr) = null,
     /// Function names being traced by (trace name)
     traced: ?std.StringHashMap(void) = null,
+    /// Displaced values that may still be executing (e.g. a function
+    /// redefining itself while the evaluator borrows it from the map);
+    /// freed when the evaluator returns to depth zero.
+    pending_frees: std.ArrayList(*Expr) = .empty,
+    /// Dispatch generation for the evaluator's operator cache. Bumped
+    /// whenever call dispatch could change: a lambda enters or leaves the
+    /// variables map, a macro is defined, or a builtin is registered.
+    /// Number/string rebinds (loop counters) leave it untouched, so the
+    /// cache stays hot through tight loops. Globally unique per Env.
+    dispatch_gen: u64,
+
+    /// Source of globally unique dispatch generations, so operator-cache
+    /// entries can never leak between Env instances (single-threaded).
+    var next_dispatch_gen: u64 = 1;
+
+    fn takeDispatchGen() u64 {
+        const gen = next_dispatch_gen;
+        // Leave room for this Env's own bumps before the next Env's range
+        next_dispatch_gen += 1 << 32;
+        return gen;
+    }
 
     pub fn init(allocator: std.mem.Allocator) Env {
         return Env{
@@ -54,12 +75,32 @@ pub const Env = struct {
             .builtins = std.StringHashMap(BuiltinFn).init(allocator),
             .rules = .empty,
             .assumptions = std.StringHashMap(Assumption).init(allocator),
+            .dispatch_gen = takeDispatchGen(),
         };
+    }
+
+    /// Queues a value for freeing at evaluator depth zero, when nothing
+    /// can still be executing it. On allocation failure the value leaks
+    /// (safe) rather than being freed while possibly in use.
+    pub fn deferFree(self: *Env, value: *Expr) void {
+        self.pending_frees.append(self.allocator, value) catch {};
+    }
+
+    /// Frees everything queued by deferFree. Called by the evaluator when
+    /// it returns to depth zero and by deinit.
+    pub fn flushPendingFrees(self: *Env) void {
+        for (self.pending_frees.items) |v| {
+            v.deinit(self.allocator);
+            self.allocator.destroy(v);
+        }
+        self.pending_frees.clearRetainingCapacity();
     }
 
     pub fn deinit(self: *Env) void {
         // The memoization cache allocates from this environment's allocator
         @import("builtins.zig").deinitMemoCache();
+        self.flushPendingFrees();
+        self.pending_frees.deinit(self.allocator);
         for (self.owned_buffers.items) |buf| self.allocator.free(buf);
         self.owned_buffers.deinit(self.allocator);
         if (self.traced) |*traced| {
@@ -104,6 +145,8 @@ pub const Env = struct {
 
     /// Toggles tracing for a function name; returns the new state.
     pub fn toggleTrace(self: *Env, name: []const u8) !bool {
+        // Traced functions dispatch differently (invalidate the op cache)
+        self.dispatch_gen += 1;
         if (self.traced == null) {
             self.traced = std.StringHashMap(void).init(self.allocator);
         }
@@ -123,6 +166,7 @@ pub const Env = struct {
 
     /// Registers a macro (takes ownership of the lambda expression).
     pub fn putMacro(self: *Env, name: []const u8, lambda: *Expr) !void {
+        self.dispatch_gen += 1;
         if (self.macros == null) {
             self.macros = std.StringHashMap(*Expr).init(self.allocator);
         }
@@ -200,19 +244,43 @@ pub const Env = struct {
     /// owns its own copy (callers may pass slices into transient buffers).
     pub fn put(self: *Env, key: []const u8, val: *Expr) !void {
         if (self.variables.getEntry(key)) |entry| {
+            // Dispatch changes when a lambda enters or leaves a name
+            if (val.* == .lambda or entry.value_ptr.*.* == .lambda) {
+                self.dispatch_gen += 1;
+            }
             // Key already owned by the map; just swap the value.
             entry.value_ptr.* = val;
         } else {
+            if (val.* == .lambda) self.dispatch_gen += 1;
             const owned_key = try self.allocator.dupe(u8, key);
             errdefer self.allocator.free(owned_key);
             try self.variables.put(owned_key, val);
         }
     }
 
+    /// Swaps in a new value and returns the displaced one (null when the
+    /// name was unbound). The caller owns the displaced value. Use this
+    /// instead of free-then-put: put must inspect the old value for the
+    /// dispatch generation, so it must still be alive.
+    pub fn replace(self: *Env, key: []const u8, val: *Expr) !?*Expr {
+        if (self.variables.getEntry(key)) |entry| {
+            const old = entry.value_ptr.*;
+            if (val.* == .lambda or old.* == .lambda) self.dispatch_gen += 1;
+            entry.value_ptr.* = val;
+            return old;
+        }
+        if (val.* == .lambda) self.dispatch_gen += 1;
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+        try self.variables.put(owned_key, val);
+        return null;
+    }
+
     /// Removes a variable binding, freeing the owned key.
     /// Does NOT free the value (callers manage value lifetime).
     pub fn remove(self: *Env, key: []const u8) bool {
         if (self.variables.fetchRemove(key)) |kv| {
+            self.dispatch_gen += 1;
             self.allocator.free(kv.key);
             return true;
         }
@@ -224,6 +292,7 @@ pub const Env = struct {
     }
 
     pub fn putBuiltin(self: *Env, key: []const u8, fn_ptr: BuiltinFn) !void {
+        self.dispatch_gen += 1;
         try self.builtins.put(key, fn_ptr);
     }
 };

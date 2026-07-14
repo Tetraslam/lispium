@@ -562,14 +562,15 @@ pub fn runWithFile(allocator: std.mem.Allocator, io: std.Io, preload: ?[]const u
 
             // Bind _ to the last result for quick reuse
             if (@import("symbolic.zig").copyExpr(result, allocator)) |last| {
-                if (env.get("_")) |old_val| {
-                    old_val.deinit(allocator);
-                    allocator.destroy(old_val);
-                } else |_| {}
-                env.put("_", last) catch {
+                if (env.replace("_", last)) |displaced| {
+                    if (displaced) |old_val| {
+                        old_val.deinit(allocator);
+                        allocator.destroy(old_val);
+                    }
+                } else |_| {
                     last.deinit(allocator);
                     allocator.destroy(last);
-                };
+                }
             } else |_| {}
         }
 

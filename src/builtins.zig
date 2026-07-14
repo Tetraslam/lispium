@@ -5,6 +5,7 @@ const Env = environment.Env;
 const Assumption = environment.Assumption;
 const symbolic = @import("symbolic.zig");
 const eval = @import("evaluator.zig").eval;
+const applyFunction = @import("evaluator.zig").applyFunction;
 
 pub const BuiltinError = error{
     InvalidArgument,
@@ -1168,7 +1169,12 @@ fn sameDims(a: QtyVal, b: QtyVal) bool {
 fn qtyArithmetic(op: u8, args: std.ArrayList(*Expr), env: *Env) BuiltinError!?*Expr {
     var any_qty = false;
     for (args.items) |arg| {
-        if (asQty(arg) != null and arg.* == .list) any_qty = true;
+        // Check the cheap tag first: quantities are always lists, so plain
+        // numeric arithmetic skips asQty entirely (this runs on every + - * /)
+        if (arg.* == .list and asQty(arg) != null) {
+            any_qty = true;
+            break;
+        }
     }
     if (!any_qty) return null;
 
@@ -9700,29 +9706,14 @@ pub fn builtin_map(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr {
         start_idx = 1;
     }
 
-    // Apply function to each element
+    // Apply the function to each element (lambdas are called directly,
+    // without copying the function per element)
     for (items[start_idx..]) |item| {
-        // Build (func item)
-        var call_list: std.ArrayList(*Expr) = .empty;
-        const func_copy = symbolic.copyExpr(func, allocator) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, func_copy) catch return BuiltinError.OutOfMemory;
-        const item_copy = symbolic.copyExpr(item, allocator) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, item_copy) catch return BuiltinError.OutOfMemory;
-
-        const call_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        call_expr.* = .{ .list = call_list };
-
-        // Evaluate the call
-        const eval_result = eval(call_expr, env) catch {
-            call_expr.deinit(allocator);
-            allocator.destroy(call_expr);
-            return BuiltinError.InvalidArgument;
+        var one_arg = [_]*Expr{item};
+        const eval_result = applyFunction(func, &one_arg, env) catch |err| switch (err) {
+            error.OutOfMemory => return BuiltinError.OutOfMemory,
+            else => return BuiltinError.InvalidArgument,
         };
-
-        // Clean up call expr and its contents (func_copy and item_copy)
-        call_expr.deinit(allocator);
-        allocator.destroy(call_expr);
-
         result_list.append(allocator, eval_result) catch return BuiltinError.OutOfMemory;
     }
 
@@ -9757,25 +9748,11 @@ pub fn builtin_filter(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     }
 
     for (items[start_idx..]) |item| {
-        // Build (pred item)
-        var call_list: std.ArrayList(*Expr) = .empty;
-        const pred_copy = symbolic.copyExpr(pred, allocator) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, pred_copy) catch return BuiltinError.OutOfMemory;
-        const item_copy = symbolic.copyExpr(item, allocator) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, item_copy) catch return BuiltinError.OutOfMemory;
-
-        const call_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        call_expr.* = .{ .list = call_list };
-
-        const eval_result = eval(call_expr, env) catch {
-            call_expr.deinit(allocator);
-            allocator.destroy(call_expr);
-            continue; // Skip on error
+        var one_arg = [_]*Expr{item};
+        const eval_result = applyFunction(pred, &one_arg, env) catch |err| switch (err) {
+            error.OutOfMemory => return BuiltinError.OutOfMemory,
+            else => continue, // Skip on error
         };
-
-        // Clean up call expr (deinit frees the list items)
-        call_expr.deinit(allocator);
-        allocator.destroy(call_expr);
 
         // Check if result is truthy (non-zero number)
         const keep = if (eval_result.* == .number) eval_result.number != 0 else true;
@@ -9819,27 +9796,17 @@ pub fn builtin_reduce(args: std.ArrayList(*Expr), env: *Env) BuiltinError!*Expr 
     }
 
     for (items[start_idx..]) |item| {
-        // Build (fn acc item)
-        var call_list: std.ArrayList(*Expr) = .empty;
-        const func_copy = symbolic.copyExpr(func, allocator) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, func_copy) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, acc) catch return BuiltinError.OutOfMemory;
-        const item_copy = symbolic.copyExpr(item, allocator) catch return BuiltinError.OutOfMemory;
-        call_list.append(allocator, item_copy) catch return BuiltinError.OutOfMemory;
-
-        const call_expr = allocator.create(Expr) catch return BuiltinError.OutOfMemory;
-        call_expr.* = .{ .list = call_list };
-
-        const new_acc = eval(call_expr, env) catch {
-            call_expr.deinit(allocator);
-            allocator.destroy(call_expr);
-            return BuiltinError.InvalidArgument;
+        var two_args = [_]*Expr{ acc, item };
+        const new_acc = applyFunction(func, &two_args, env) catch |err| {
+            acc.deinit(allocator);
+            allocator.destroy(acc);
+            return switch (err) {
+                error.OutOfMemory => BuiltinError.OutOfMemory,
+                else => BuiltinError.InvalidArgument,
+            };
         };
-
-        // Clean up call expr and its contents (func_copy, old acc, item_copy)
-        call_expr.deinit(allocator);
-        allocator.destroy(call_expr);
-
+        acc.deinit(allocator);
+        allocator.destroy(acc);
         acc = new_acc;
     }
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.12.0] - 2026-07-13
+
+The speed release. Programs run 4-6.5x faster (recursive calls 4.6x,
+tail loops 6.5x, map/filter/reduce pipelines 4.3x); micro benchmarks
+average 1.9x. No language changes.
+
+### Changed
+- All CLI allocation goes through a single-threaded free-list pool
+  (`pool.zig`), eliminating allocator lock and safety-memset overhead on
+  the interpreter's small-block churn.
+- Function calls borrow lambdas from the environment instead of deep
+  copying them per call (and per tail-call iteration). Values displaced
+  while possibly executing are freed at evaluator depth zero.
+- Operator dispatch: special forms use a comptime string map; variable/
+  builtin/macro resolution goes through a generation-validated inline
+  cache, so tight loops skip all hashmap lookups.
+- map/filter/reduce call lambdas directly instead of building a synthetic
+  call expression (with a full lambda copy) per element.
+- `factorial` above 20 got ~2x faster as a side effect of pooling.
+
+### Added
+- `lispium bench` overhaul: a Programs category (recursion, tail loops,
+  closures, higher-order pipelines, strings, sort, macros, bigints),
+  median-based reporting, `--filter`, and `--save FILE` / `--compare
+  FILE` with per-benchmark deltas and a geomean summary.
+
 ## [0.11.0] - 2026-07-13
 
 The pinpoint release.

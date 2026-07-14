@@ -98,58 +98,103 @@ pub fn takeErrorContext() []const u8 {
 }
 
 // ============================================================================
-// Source positions: when a PosMap from the parser is installed, eval tracks
-// which source subexpression it is inside via a token stack that unwinds on
-// success but is left in place on error, so the top-of-stack token is the
-// innermost failing subexpression. Same pattern as the call stack above.
+// Source positions: when a PosMap from the parser is installed, the FIRST
+// eval frame to catch a propagating error whose node has a recorded source
+// token is the innermost failing subexpression, so that token wins. All
+// bookkeeping lives on the error path; successful evaluation pays nothing.
 // ============================================================================
 
 pub const PosMap = @import("parser.zig").PosMap;
 
-const POS_STACK_MAX = 64;
 threadlocal var position_map: ?*const PosMap = null;
-threadlocal var pos_stack: [POS_STACK_MAX][]const u8 = undefined;
-threadlocal var pos_stack_len: usize = 0;
+threadlocal var error_pos: ?[]const u8 = null;
 
 /// Installs (or clears, with null) the node-to-token map for the statement
-/// about to be evaluated. Resets the position stack.
+/// about to be evaluated. Resets any recorded error position.
 pub fn setPositionMap(map: ?*const PosMap) void {
     position_map = map;
-    pos_stack_len = 0;
+    error_pos = null;
 }
 
 /// The source token of the innermost failing subexpression, or null when
-/// no position is known. Clears the stack.
+/// no position is known. Clears the recorded position.
 pub fn takeErrorPosition() ?[]const u8 {
-    if (pos_stack_len == 0) return null;
-    const tok = pos_stack[pos_stack_len - 1];
-    pos_stack_len = 0;
+    const tok = error_pos;
+    error_pos = null;
     return tok;
 }
 
+/// Special forms, dispatched via a comptime string map (the evaluator
+/// checks this once per list evaluation, so it must be fast).
+const SpecialForm = enum {
+    lambda,
+    define,
+    @"if",
+    let,
+    matrix,
+    sum,
+    letrec,
+    product,
+    solve,
+    dsolve,
+    begin,
+    cond,
+    @"and",
+    @"or",
+    @"try",
+    step,
+    time,
+    trace,
+    defmacro,
+    quote,
+    quasiquote,
+    unquote,
+};
+
+const special_forms = std.StaticStringMap(SpecialForm).initComptime(.{
+    .{ "lambda", .lambda },
+    .{ "define", .define },
+    .{ "if", .@"if" },
+    .{ "let", .let },
+    .{ "matrix", .matrix },
+    .{ "sum", .sum },
+    .{ "letrec", .letrec },
+    .{ "product", .product },
+    .{ "solve", .solve },
+    .{ "dsolve", .dsolve },
+    .{ "begin", .begin },
+    .{ "cond", .cond },
+    .{ "and", .@"and" },
+    .{ "or", .@"or" },
+    .{ "try", .@"try" },
+    .{ "step", .step },
+    .{ "time", .time },
+    .{ "trace", .trace },
+    .{ "defmacro", .defmacro },
+    .{ "quote", .quote },
+    .{ "quasiquote", .quasiquote },
+    .{ "unquote", .unquote },
+});
+
 pub fn eval(expr: *Expr, env: *Env) Error!*Expr {
     eval_depth += 1;
-    defer eval_depth -= 1;
+    defer {
+        eval_depth -= 1;
+        // Back at the top level: nothing borrowed can still be executing
+        if (eval_depth == 0) env.flushPendingFrees();
+    }
     if (eval_depth > max_eval_depth) return Error.RecursionLimit;
 
-    // Track which source subexpression we're in (parse-tree nodes only).
-    // The saved length (not a decrement) heals any stale entries left by
-    // builtins that catch and discard inner eval errors.
-    const saved_pos_len = pos_stack_len;
-    var tracked = false;
-    if (position_map) |map| {
-        if (map.get(expr)) |tok| {
-            if (pos_stack_len < POS_STACK_MAX) {
-                pos_stack[pos_stack_len] = tok;
-                pos_stack_len += 1;
-                tracked = true;
+    return evalTop(expr, env) catch |err| {
+        // Record the innermost failing subexpression with a known source
+        // position (the deepest frame's catch runs first)
+        if (error_pos == null) {
+            if (position_map) |map| {
+                if (map.get(expr)) |tok| error_pos = tok;
             }
         }
-    }
-
-    const result = try evalTop(expr, env);
-    if (tracked) pos_stack_len = saved_pos_len;
-    return result;
+        return err;
+    };
 }
 
 fn evalTop(expr: *Expr, env: *Env) Error!*Expr {
@@ -215,144 +260,124 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
             // Get the operator
             const op_expr = expr.list.items[0];
 
-            // Handle special forms first (before evaluating anything)
-            if (op_expr.* == .symbol) {
-                // (lambda (params...) body)
-                if (std.mem.eql(u8, op_expr.symbol, "lambda")) {
-                    return try evalLambda(expr, env);
-                }
-                // (define name value) or (define (name params...) body)
-                if (std.mem.eql(u8, op_expr.symbol, "define")) {
-                    return try evalDefine(expr, env);
-                }
-                // (if condition then-expr else-expr)
-                if (std.mem.eql(u8, op_expr.symbol, "if")) {
-                    return try evalIf(expr, env);
-                }
-                // (let ((var val) ...) body)
-                if (std.mem.eql(u8, op_expr.symbol, "let")) {
-                    return try evalLet(expr, env);
-                }
-                // (matrix (row1...) (row2...) ...) - special form, don't evaluate rows
-                if (std.mem.eql(u8, op_expr.symbol, "matrix")) {
-                    return try evalMatrix(expr, env);
-                }
-                // (sum var start end body) - summation notation
-                if (std.mem.eql(u8, op_expr.symbol, "sum")) {
-                    return try evalSum(expr, env);
-                }
-                // (letrec ((var val) ...) body) - recursive let
-                if (std.mem.eql(u8, op_expr.symbol, "letrec")) {
-                    return try evalLetrec(expr, env);
-                }
-                // (product var start end body) - product notation
-                if (std.mem.eql(u8, op_expr.symbol, "product")) {
-                    return try evalProduct(expr, env);
-                }
-                // (solve equation var) - special form to handle (= left right) syntax
-                if (std.mem.eql(u8, op_expr.symbol, "solve")) {
-                    return try evalSolve(expr, env);
-                }
-                // (dsolve equation y x) - special form: the ODE must NOT be
-                // pre-evaluated (otherwise (diff y x) collapses to 0)
-                if (std.mem.eql(u8, op_expr.symbol, "dsolve")) {
-                    return try evalDsolve(expr, env);
-                }
-                // (begin e1 e2 ...) - evaluate in order, return the last
-                if (std.mem.eql(u8, op_expr.symbol, "begin")) {
-                    return try evalBegin(expr, env);
-                }
-                // (cond (test result) ... (else result)) - multi-branch
-                if (std.mem.eql(u8, op_expr.symbol, "cond")) {
-                    return try evalCond(expr, env);
-                }
-                // (and ...) / (or ...) - short-circuit special forms
-                if (std.mem.eql(u8, op_expr.symbol, "and")) {
-                    return try evalAndOr(expr, env, true);
-                }
-                if (std.mem.eql(u8, op_expr.symbol, "or")) {
-                    return try evalAndOr(expr, env, false);
-                }
-                // (try expr fallback) - evaluate expr; on error, evaluate
-                // fallback instead (recoverable error handling)
-                if (std.mem.eql(u8, op_expr.symbol, "try")) {
-                    if (expr.list.items.len != 3) return Error.InvalidSyntax;
-                    const saved_depth = call_stack_len;
-                    const saved_pos = pos_stack_len;
-                    const attempted = eval(expr.list.items[1], env) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        else => {
-                            // Recovered: discard the failed branch's frames
-                            call_stack_len = saved_depth;
-                            call_stack_truncated = false;
-                            pos_stack_len = saved_pos;
-                            _ = takeErrorContextPeek();
-                            return try eval(expr.list.items[2], env);
-                        },
-                    };
-                    return attempted;
-                }
-                // (step expr) - evaluate while printing every reduction
-                if (std.mem.eql(u8, op_expr.symbol, "step")) {
-                    if (expr.list.items.len != 2) return Error.InvalidSyntax;
-                    const was_stepping = step_mode;
-                    step_mode = true;
-                    if (!was_stepping) step_count = 0;
-                    defer step_mode = was_stepping;
-                    return try eval(expr.list.items[1], env);
-                }
-                // (time expr) - evaluate and report wall time
-                if (std.mem.eql(u8, op_expr.symbol, "time")) {
-                    if (expr.list.items.len != 2) return Error.InvalidSyntax;
-                    const io = env.io orelse return try eval(expr.list.items[1], env);
-                    const start = std.Io.Timestamp.now(io, .awake).nanoseconds;
-                    const result = try eval(expr.list.items[1], env);
-                    const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - start;
-                    if (env.out) |out| {
-                        const us: u64 = @intCast(@max(0, @divTrunc(elapsed, 1000)));
-                        if (us < 1000) {
-                            out.print("time: {d}us\n", .{us}) catch {};
-                        } else if (us < 1_000_000) {
-                            out.print("time: {d}.{d:0>3}ms\n", .{ us / 1000, us % 1000 }) catch {};
-                        } else {
-                            out.print("time: {d}.{d:0>3}s\n", .{ us / 1_000_000, (us % 1_000_000) / 1000 }) catch {};
+            // Handle special forms first (before evaluating anything).
+            // Dispatch through a comptime perfect-ish map instead of a
+            // string-compare chain: this runs for every list evaluation.
+            if (op_expr.* == .symbol) special: {
+                const form = special_forms.get(op_expr.symbol) orelse break :special;
+                switch (form) {
+                    .lambda => return try evalLambda(expr, env),
+                    .define => return try evalDefine(expr, env),
+                    .@"if" => return try evalIf(expr, env),
+                    .let => return try evalLet(expr, env),
+                    // (matrix (row1...) ...) - rows are not evaluated
+                    .matrix => return try evalMatrix(expr, env),
+                    .sum => return try evalSum(expr, env),
+                    .letrec => return try evalLetrec(expr, env),
+                    .product => return try evalProduct(expr, env),
+                    // (solve equation var) - handles (= left right) syntax
+                    .solve => return try evalSolve(expr, env),
+                    // (dsolve equation y x) - the ODE must NOT be
+                    // pre-evaluated (otherwise (diff y x) collapses to 0)
+                    .dsolve => return try evalDsolve(expr, env),
+                    .begin => return try evalBegin(expr, env),
+                    .cond => return try evalCond(expr, env),
+                    .@"and" => return try evalAndOr(expr, env, true),
+                    .@"or" => return try evalAndOr(expr, env, false),
+                    // (try expr fallback) - recoverable error handling
+                    .@"try" => {
+                        if (expr.list.items.len != 3) return Error.InvalidSyntax;
+                        const saved_depth = call_stack_len;
+                        const attempted = eval(expr.list.items[1], env) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => {
+                                // Recovered: discard the failed branch's frames
+                                call_stack_len = saved_depth;
+                                call_stack_truncated = false;
+                                error_pos = null;
+                                _ = takeErrorContextPeek();
+                                return try eval(expr.list.items[2], env);
+                            },
+                        };
+                        return attempted;
+                    },
+                    // (step expr) - evaluate while printing every reduction
+                    .step => {
+                        if (expr.list.items.len != 2) return Error.InvalidSyntax;
+                        const was_stepping = step_mode;
+                        step_mode = true;
+                        if (!was_stepping) step_count = 0;
+                        defer step_mode = was_stepping;
+                        return try eval(expr.list.items[1], env);
+                    },
+                    // (time expr) - evaluate and report wall time
+                    .time => {
+                        if (expr.list.items.len != 2) return Error.InvalidSyntax;
+                        const io = env.io orelse return try eval(expr.list.items[1], env);
+                        const start = std.Io.Timestamp.now(io, .awake).nanoseconds;
+                        const result = try eval(expr.list.items[1], env);
+                        const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - start;
+                        if (env.out) |out| {
+                            const us: u64 = @intCast(@max(0, @divTrunc(elapsed, 1000)));
+                            if (us < 1000) {
+                                out.print("time: {d}us\n", .{us}) catch {};
+                            } else if (us < 1_000_000) {
+                                out.print("time: {d}.{d:0>3}ms\n", .{ us / 1000, us % 1000 }) catch {};
+                            } else {
+                                out.print("time: {d}.{d:0>3}s\n", .{ us / 1_000_000, (us % 1_000_000) / 1000 }) catch {};
+                            }
+                            out.flush() catch {};
                         }
-                        out.flush() catch {};
-                    }
-                    return result;
-                }
-                // (trace name) - toggle call tracing for a user function.
-                // Only intercepts when the argument names a lambda (the
-                // matrix trace builtin keeps working for everything else).
-                if (std.mem.eql(u8, op_expr.symbol, "trace") and
-                    expr.list.items.len == 2 and expr.list.items[1].* == .symbol)
-                {
-                    const name = expr.list.items[1].symbol;
-                    const is_fn = if (env.get(name)) |v| v.* == .lambda else |_| false;
-                    if (is_fn or env.isTraced(name)) {
-                        const enabled = env.toggleTrace(name) catch return Error.OutOfMemory;
-                        const result = try env.allocator.create(Expr);
-                        result.* = .{ .symbol = if (enabled) "tracing" else "untraced" };
                         return result;
+                    },
+                    // (trace name) - toggle call tracing for a user function.
+                    // Only intercepts when the argument names a lambda (the
+                    // matrix trace builtin keeps working for everything else).
+                    .trace => {
+                        if (expr.list.items.len == 2 and expr.list.items[1].* == .symbol) {
+                            const name = expr.list.items[1].symbol;
+                            const is_fn = if (env.get(name)) |v| v.* == .lambda else |_| false;
+                            if (is_fn or env.isTraced(name)) {
+                                const enabled = env.toggleTrace(name) catch return Error.OutOfMemory;
+                                const result = try env.allocator.create(Expr);
+                                result.* = .{ .symbol = if (enabled) "tracing" else "untraced" };
+                                return result;
+                            }
+                        }
+                        break :special; // fall through to the trace builtin
+                    },
+                    .defmacro => return try evalDefmacro(expr, env),
+                    // (quote expr) - return expr unevaluated
+                    .quote => {
+                        if (expr.list.items.len != 2) return Error.InvalidSyntax;
+                        return try symbolic.copyExpr(expr.list.items[1], env.allocator);
+                    },
+                    .quasiquote => {
+                        if (expr.list.items.len != 2) return Error.InvalidSyntax;
+                        return try evalQuasiquote(expr.list.items[1], env);
+                    },
+                    // (unquote expr) outside quasiquote is an error
+                    .unquote => return Error.InvalidSyntax,
+                }
+            }
+
+            // Fast dispatch: cached operators skip the macro, variable,
+            // and builtin hashmap lookups (the generation check guarantees
+            // nothing dispatch-relevant changed since the fill)
+            if (op_expr.* == .symbol) {
+                const oc = opCacheSlot(op_expr.symbol);
+                if (oc.key_ptr == @intFromPtr(op_expr.symbol.ptr) and
+                    oc.key_len == op_expr.symbol.len and oc.gen == env.dispatch_gen)
+                {
+                    if (oc.lambda) |val| {
+                        pushCall(val.lambda.name orelse op_expr.symbol);
+                        const call_result = try callLambda(val, expr.list.items[1..], env, val);
+                        popCall();
+                        return call_result;
                     }
-                }
-                // (defmacro (name params...) template) - define a macro
-                if (std.mem.eql(u8, op_expr.symbol, "defmacro")) {
-                    return try evalDefmacro(expr, env);
-                }
-                // (quote expr) - return expr unevaluated
-                if (std.mem.eql(u8, op_expr.symbol, "quote")) {
-                    if (expr.list.items.len != 2) return Error.InvalidSyntax;
-                    return try symbolic.copyExpr(expr.list.items[1], env.allocator);
-                }
-                // (quasiquote expr) - like quote, but (unquote x) evaluates
-                if (std.mem.eql(u8, op_expr.symbol, "quasiquote")) {
-                    if (expr.list.items.len != 2) return Error.InvalidSyntax;
-                    return try evalQuasiquote(expr.list.items[1], env);
-                }
-                // (unquote expr) outside quasiquote is an error
-                if (std.mem.eql(u8, op_expr.symbol, "unquote")) {
-                    return Error.InvalidSyntax;
+                    if (oc.func) |func| {
+                        return try callBuiltin(func, op_expr.symbol, expr, env);
+                    }
                 }
             }
 
@@ -364,73 +389,157 @@ fn evalInner(expr: *Expr, env: *Env) Error!*Expr {
                 }
             }
 
-            // Evaluate the operator (could be a lambda expression or a symbol)
-            const evaled_op = try eval(op_expr, env);
-            defer {
-                evaled_op.deinit(env.allocator);
-                env.allocator.destroy(evaled_op);
-            }
+            // Resolve a symbol operator directly from the environment
+            // instead of evaluating it: evaluating would deep-copy the
+            // whole lambda (params + body) on every single call.
+            const op_name: ?[]const u8 = switch (op_expr.*) {
+                .symbol, .owned_symbol => |s| s,
+                else => null,
+            };
 
-            // If the operator evaluated to a lambda, call it
-            if (evaled_op.* == .lambda) {
-                pushCall(evaled_op.lambda.name orelse
-                    (if (op_expr.* == .symbol) op_expr.symbol else "<lambda>"));
-                const call_result = if (op_expr.* == .symbol and env.isTraced(op_expr.symbol))
-                    try callLambdaTraced(op_expr.symbol, evaled_op, expr.list.items[1..], env)
-                else
-                    try callLambda(evaled_op, expr.list.items[1..], env);
-                popCall();
-                return call_result;
-            }
-
-            // Otherwise, try builtin lookup (operator must be a symbol)
-            if (op_expr.* != .symbol) {
+            if (op_name == null) {
+                // Non-symbol operator (lambda literal, nested call, ...)
+                const evaled_op = try eval(op_expr, env);
+                defer {
+                    evaled_op.deinit(env.allocator);
+                    env.allocator.destroy(evaled_op);
+                }
+                if (evaled_op.* == .lambda) {
+                    pushCall(evaled_op.lambda.name orelse "<lambda>");
+                    const call_result = try callLambda(evaled_op, expr.list.items[1..], env, null);
+                    popCall();
+                    return call_result;
+                }
                 return Error.UnsupportedOperator;
             }
 
-            const func = env.getBuiltin(op_expr.symbol) catch {
-                // Not a builtin - check if it's a user-defined function in variables
-                if (env.get(op_expr.symbol)) |val| {
-                    if (val.* == .lambda) {
-                        pushCall(op_expr.symbol);
-                        const call_result = if (env.isTraced(op_expr.symbol))
-                            try callLambdaTraced(op_expr.symbol, val, expr.list.items[1..], env)
-                        else
-                            try callLambda(val, expr.list.items[1..], env);
-                        popCall();
-                        return call_result;
+            // Variable bound to a lambda: call it, BORROWING the value
+            // from the environment (redefinition during the call is safe:
+            // displaced values go through the depth-zero graveyard)
+            if (env.get(op_name.?)) |val| {
+                if (val.* == .lambda) {
+                    const traced = env.isTraced(op_name.?);
+                    if (op_expr.* == .symbol and !traced) {
+                        fillOpCache(op_name.?, env, null, val);
                     }
-                } else |_| {}
-                // Return as symbolic expression
+                    pushCall(val.lambda.name orelse op_name.?);
+                    const call_result = if (traced)
+                        try callLambdaTraced(op_name.?, val, expr.list.items[1..], env)
+                    else
+                        try callLambda(val, expr.list.items[1..], env, val);
+                    popCall();
+                    return call_result;
+                }
+            } else |_| {}
+
+            const func = env.getBuiltin(op_name.?) catch {
+                // Neither a function-valued variable nor a builtin:
+                // return as a symbolic expression
                 return try symbolic.copyExpr(expr, env.allocator);
             };
-
-            // Evaluate arguments - evaluator owns these, will free after builtin returns
-            var args: std.ArrayList(*Expr) = .empty;
-            errdefer {
-                for (args.items) |arg| {
-                    arg.deinit(env.allocator);
-                    env.allocator.destroy(arg);
-                }
-                args.deinit(env.allocator);
-            }
-            for (expr.list.items[1..]) |arg| {
-                try args.append(env.allocator, try eval(arg, env));
-            }
-            const result = func(args, env) catch |err| {
-                // Remember the failing operator for better error messages
-                setErrorContext(op_expr.symbol);
-                return err;
-            };
-            // Free the args - builtin should have copied anything it needs
-            for (args.items) |arg| {
-                arg.deinit(env.allocator);
-                env.allocator.destroy(arg);
-            }
-            args.deinit(env.allocator);
-            return result;
+            if (op_expr.* == .symbol) fillOpCache(op_name.?, env, func, null);
+            return try callBuiltin(func, op_name.?, expr, env);
         },
     }
+}
+
+/// Applies a function value to argument expressions. Higher-order
+/// builtins (map, filter, reduce) use this to call lambdas directly
+/// instead of deep-copying the lambda into a synthetic call expression
+/// for every element. The arguments are evaluated by the call, exactly
+/// like a written-out `(f arg ...)`; the caller keeps ownership of both
+/// `func` and the argument expressions.
+pub fn applyFunction(func: *Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
+    if (func.* == .lambda) {
+        pushCall(func.lambda.name orelse "<lambda>");
+        const result = try callLambda(func, arg_exprs, env, func);
+        popCall();
+        return result;
+    }
+    // Symbols (builtin names, function-valued variables) and anything
+    // else: build the call expression and evaluate it normally
+    var call_list: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (call_list.items) |item| {
+            item.deinit(env.allocator);
+            env.allocator.destroy(item);
+        }
+        call_list.deinit(env.allocator);
+    }
+    try call_list.ensureTotalCapacityPrecise(env.allocator, arg_exprs.len + 1);
+    call_list.appendAssumeCapacity(try symbolic.copyExpr(func, env.allocator));
+    for (arg_exprs) |arg| {
+        call_list.appendAssumeCapacity(try symbolic.copyExpr(arg, env.allocator));
+    }
+    const call_expr = try env.allocator.create(Expr);
+    call_expr.* = .{ .list = call_list };
+    defer {
+        call_expr.deinit(env.allocator);
+        env.allocator.destroy(call_expr);
+    }
+    // The errdefer above must not double-free once call_expr owns the list
+    call_list = .empty;
+    return try eval(call_expr, env);
+}
+
+/// Evaluates the arguments and invokes a builtin. The evaluator owns the
+/// argument expressions and frees them after the builtin returns.
+fn callBuiltin(func: @import("builtins.zig").BuiltinFn, name: []const u8, expr: *Expr, env: *Env) Error!*Expr {
+    var args: std.ArrayList(*Expr) = .empty;
+    errdefer {
+        for (args.items) |arg| {
+            arg.deinit(env.allocator);
+            env.allocator.destroy(arg);
+        }
+        args.deinit(env.allocator);
+    }
+    try args.ensureTotalCapacityPrecise(env.allocator, expr.list.items.len - 1);
+    for (expr.list.items[1..]) |arg| {
+        args.appendAssumeCapacity(try eval(arg, env));
+    }
+    const result = func(args, env) catch |err| {
+        // Remember the failing operator for better error messages
+        setErrorContext(name);
+        return err;
+    };
+    // Free the args - builtin should have copied anything it needs
+    for (args.items) |arg| {
+        arg.deinit(env.allocator);
+        env.allocator.destroy(arg);
+    }
+    args.deinit(env.allocator);
+    return result;
+}
+
+// ============================================================================
+// Operator dispatch cache: a direct-mapped cache keyed by the operator
+// symbol's address (parse-tree and lambda-body symbol slices are stable),
+// validated against the environment's dispatch generation. A hit skips
+// the macro, variable, and builtin hashmap lookups.
+// ============================================================================
+
+const OP_CACHE_SIZE = 512;
+const OpCacheEntry = struct {
+    key_ptr: usize = 0,
+    key_len: usize = 0,
+    gen: u64 = 0,
+    func: ?@import("builtins.zig").BuiltinFn = null,
+    lambda: ?*Expr = null,
+};
+threadlocal var op_cache: [OP_CACHE_SIZE]OpCacheEntry = @splat(.{});
+
+inline fn opCacheSlot(name: []const u8) *OpCacheEntry {
+    return &op_cache[(@intFromPtr(name.ptr) >> 3) & (OP_CACHE_SIZE - 1)];
+}
+
+fn fillOpCache(name: []const u8, env: *const Env, func: ?@import("builtins.zig").BuiltinFn, lambda: ?*Expr) void {
+    opCacheSlot(name).* = .{
+        .key_ptr = @intFromPtr(name.ptr),
+        .key_len = name.len,
+        .gen = env.dispatch_gen,
+        .func = func,
+        .lambda = lambda,
+    };
 }
 
 /// Evaluates (lambda (params...) body) into a Lambda expression.
@@ -715,7 +824,7 @@ fn expandAndEvalMacro(macro: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*
 
     // Bind parameters to the raw (unevaluated) argument expressions
     for (lam.params.items, arg_exprs) |param, arg| {
-        try bindParam(&old_values, env, param, try symbolic.copyExpr(arg, env.allocator));
+        try bindParam(&old_values, env, param, try symbolic.copyExpr(arg, env.allocator), null);
     }
 
     // Evaluate the template to build the expansion
@@ -918,10 +1027,10 @@ fn evalDefine(expr: *Expr, env: *Env) Error!*Expr {
             env.allocator.destroy(value);
         }
 
-        // If there's an old value, free it
+        // Displace any old value; it may still be executing (a function
+        // redefining itself), so it is freed at depth zero
         if (env.get(name_or_sig.symbol)) |old| {
-            old.deinit(env.allocator);
-            env.allocator.destroy(old);
+            env.deferFree(old);
         } else |_| {}
 
         try env.put(name_or_sig.symbol, value);
@@ -976,10 +1085,10 @@ fn evalDefine(expr: *Expr, env: *Env) Error!*Expr {
         const lambda_expr = try env.allocator.create(Expr);
         lambda_expr.* = .{ .lambda = .{ .params = params, .body = body_copy, .name = func_name } };
 
-        // If there's an old value, free it
+        // Displace any old value; it may still be executing (a function
+        // redefining itself), so it is freed at depth zero
         if (env.get(func_name)) |old| {
-            old.deinit(env.allocator);
-            env.allocator.destroy(old);
+            env.deferFree(old);
         } else |_| {}
 
         try env.put(func_name, lambda_expr);
@@ -1086,12 +1195,11 @@ fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
         // Restore old values on error
         for (old_values.items) |item| {
             if (item.value) |old| {
-                const current = env.get(item.name) catch null;
+                const current = (env.replace(item.name, old) catch null) orelse null;
                 if (current) |c| {
                     c.deinit(env.allocator);
                     env.allocator.destroy(c);
                 }
-                env.put(item.name, old) catch {};
             } else {
                 // Remove the binding
                 if (env.get(item.name)) |current| {
@@ -1107,12 +1215,11 @@ fn evalLet(expr: *Expr, env: *Env) Error!*Expr {
     // Restore old values (let has lexical scope)
     for (old_values.items) |item| {
         if (item.value) |old| {
-            const current = env.get(item.name) catch null;
+            const current = try env.replace(item.name, old);
             if (current) |c| {
                 c.deinit(env.allocator);
                 env.allocator.destroy(c);
             }
-            try env.put(item.name, old);
         } else {
             // Remove the binding
             if (env.get(item.name)) |current| {
@@ -1164,12 +1271,10 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
         const var_val = try eval(binding.list.items[1], env);
 
         // Replace placeholder with actual value
-        if (env.get(var_name)) |current| {
+        if (try env.replace(var_name, var_val)) |current| {
             current.deinit(env.allocator);
             env.allocator.destroy(current);
-        } else |_| {}
-
-        try env.put(var_name, var_val);
+        }
     }
 
     // Evaluate body
@@ -1177,12 +1282,11 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
         // Restore old values on error
         for (old_values.items) |item| {
             if (item.value) |old| {
-                const current = env.get(item.name) catch null;
+                const current = (env.replace(item.name, old) catch null) orelse null;
                 if (current) |c| {
                     c.deinit(env.allocator);
                     env.allocator.destroy(c);
                 }
-                env.put(item.name, old) catch {};
             } else {
                 // Remove the binding
                 if (env.get(item.name)) |current| {
@@ -1198,12 +1302,11 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
     // Restore old values (letrec has lexical scope)
     for (old_values.items) |item| {
         if (item.value) |old| {
-            const current = env.get(item.name) catch null;
+            const current = try env.replace(item.name, old);
             if (current) |c| {
                 c.deinit(env.allocator);
                 env.allocator.destroy(c);
             }
-            try env.put(item.name, old);
         } else {
             // Remove the binding
             if (env.get(item.name)) |current| {
@@ -1218,7 +1321,11 @@ fn evalLetrec(expr: *Expr, env: *Env) Error!*Expr {
 }
 
 /// Calls a lambda with given arguments
-fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
+/// Calls a lambda. `borrowed` is the environment-owned expression the
+/// lambda was resolved from (null when the caller owns `lambda`): it must
+/// never be freed mid-call, so rebinding that exact value routes through
+/// the depth-zero graveyard instead.
+fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env, borrowed: ?*const Expr) Error!*Expr {
     // Evaluate the initial arguments
     var args: std.ArrayList(*Expr) = .empty;
     errdefer {
@@ -1240,6 +1347,9 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
         env.allocator.destroy(l);
     };
     var current: *const Expr = lambda;
+    // The environment-owned value currently executing; bindParam must not
+    // free it (tail calls can rebind the very name it came from)
+    var protected: ?*const Expr = borrowed;
 
     // Bindings saved across all iterations; first save per name wins
     var old_values: std.ArrayList(SavedBinding) = .empty;
@@ -1259,31 +1369,48 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
             return Error.WrongNumberOfArguments;
         }
 
-        // Bind fixed parameters
-        for (lam.params.items[0..fixed_count], args.items[0..fixed_count]) |param, arg| {
-            try bindParam(&old_values, env, param, try symbolic.copyExpr(arg, env.allocator));
-        }
-
-        // Bind the rest parameter to a (list ...) of the remaining arguments
-        if (is_variadic) {
-            const rest_name = lam.params.items[lam.params.items.len - 1];
-            var rest_list: std.ArrayList(*Expr) = .empty;
+        // Bind parameters. Ownership of each evaluated argument MOVES into
+        // the environment (no copies): restoreBindings or the next
+        // trampoline iteration's bind frees them.
+        {
+            var bound: usize = 0;
             errdefer {
-                for (rest_list.items) |item| {
-                    item.deinit(env.allocator);
-                    env.allocator.destroy(item);
+                // Moved args now live in env; drop only the unmoved tail
+                for (args.items[bound..]) |arg| {
+                    arg.deinit(env.allocator);
+                    env.allocator.destroy(arg);
                 }
-                rest_list.deinit(env.allocator);
+                args.clearRetainingCapacity();
             }
-            const list_sym = try env.allocator.create(Expr);
-            list_sym.* = .{ .symbol = "list" };
-            try rest_list.append(env.allocator, list_sym);
-            for (args.items[fixed_count..]) |arg| {
-                try rest_list.append(env.allocator, try symbolic.copyExpr(arg, env.allocator));
+            for (lam.params.items[0..fixed_count], args.items[0..fixed_count]) |param, arg| {
+                try bindParam(&old_values, env, param, arg, protected);
+                bound += 1;
             }
-            const rest_expr = try env.allocator.create(Expr);
-            rest_expr.* = .{ .list = rest_list };
-            try bindParam(&old_values, env, rest_name, rest_expr);
+
+            // Bind the rest parameter to a (list ...) of the remaining args
+            if (is_variadic) {
+                const rest_name = lam.params.items[lam.params.items.len - 1];
+                var rest_list: std.ArrayList(*Expr) = .empty;
+                errdefer {
+                    // Items moved into rest_list are no longer in args
+                    for (rest_list.items) |item| {
+                        item.deinit(env.allocator);
+                        env.allocator.destroy(item);
+                    }
+                    rest_list.deinit(env.allocator);
+                }
+                const list_sym = try env.allocator.create(Expr);
+                list_sym.* = .{ .symbol = "list" };
+                try rest_list.append(env.allocator, list_sym);
+                for (args.items[fixed_count..]) |arg| {
+                    try rest_list.append(env.allocator, arg);
+                    bound += 1;
+                }
+                const rest_expr = try env.allocator.create(Expr);
+                rest_expr.* = .{ .list = rest_list };
+                try bindParam(&old_values, env, rest_name, rest_expr, protected);
+            }
+            args.clearRetainingCapacity();
         }
 
         // Descend to the tail expression through if/begin/cond
@@ -1360,8 +1487,24 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
         // Is the tail expression a call to a lambda? Then loop instead of
         // recursing (proper tail calls).
         if (body.* == .list and body.list.items.len > 0 and !isSpecialFormHead(body.list.items[0])) {
-            const evaled_op = try eval(body.list.items[0], env);
-            if (evaled_op.* == .lambda) {
+            const op_node = body.list.items[0];
+            // Resolve symbol operators by borrowing from the environment
+            // (no deep copy per iteration); anything else is evaluated
+            // into an owned value.
+            var evaled_op: ?*Expr = null; // owned; must be freed if not consumed
+            var borrowed_op: ?*Expr = null;
+            if (op_node.* == .symbol) {
+                if (env.get(op_node.symbol)) |val| {
+                    borrowed_op = val;
+                } else |_| {}
+            }
+            if (borrowed_op == null and op_node.* != .symbol) {
+                evaled_op = try eval(op_node, env);
+            }
+            const next_op: ?*Expr = borrowed_op orelse evaled_op;
+
+            if (next_op != null and next_op.?.* == .lambda) {
+                const next_lambda = next_op.?;
                 // Evaluate the new arguments with the current bindings
                 var new_args: std.ArrayList(*Expr) = .empty;
                 errdefer {
@@ -1370,8 +1513,10 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
                         env.allocator.destroy(arg);
                     }
                     new_args.deinit(env.allocator);
-                    evaled_op.deinit(env.allocator);
-                    env.allocator.destroy(evaled_op);
+                    if (evaled_op) |o| {
+                        o.deinit(env.allocator);
+                        env.allocator.destroy(o);
+                    }
                 }
                 for (body.list.items[1..]) |arg_expr| {
                     try new_args.append(env.allocator, try eval(arg_expr, env));
@@ -1380,10 +1525,10 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
                 // The tail call reuses this frame: rename it for traces.
                 // Must happen before the old lambda (which owns `body`) is
                 // freed below.
-                if (evaled_op.lambda.name) |n| {
+                if (next_lambda.lambda.name) |n| {
                     replaceTopCall(n);
-                } else if (body.list.items[0].* == .symbol) {
-                    replaceTopCall(body.list.items[0].symbol);
+                } else if (op_node.* == .symbol) {
+                    replaceTopCall(op_node.symbol);
                 }
 
                 // Swap in the new frame
@@ -1398,12 +1543,15 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
                     l.deinit(env.allocator);
                     env.allocator.destroy(l);
                 }
-                lambda_storage = evaled_op;
-                current = evaled_op;
+                lambda_storage = evaled_op; // null when borrowed
+                protected = borrowed_op;
+                current = next_lambda;
                 continue :trampoline;
             }
-            evaled_op.deinit(env.allocator);
-            env.allocator.destroy(evaled_op);
+            if (evaled_op) |o| {
+                o.deinit(env.allocator);
+                env.allocator.destroy(o);
+            }
         }
 
         // Not a tail call: evaluate normally and finish
@@ -1425,7 +1573,9 @@ fn callLambda(lambda: *const Expr, arg_exprs: []*Expr, env: *Env) Error!*Expr {
 
 /// Binds a parameter, saving the outer value the first time a name is
 /// bound in this call frame and freeing our own previous value after that.
-fn bindParam(old_values: *std.ArrayList(SavedBinding), env: *Env, name: []const u8, value: *Expr) Error!void {
+/// `protected` is the environment value currently being executed (a
+/// borrowed lambda); displacing it defers the free to depth zero.
+fn bindParam(old_values: *std.ArrayList(SavedBinding), env: *Env, name: []const u8, value: *Expr, protected: ?*const Expr) Error!void {
     var already_saved = false;
     for (old_values.items) |item| {
         if (std.mem.eql(u8, item.name, name)) {
@@ -1433,32 +1583,28 @@ fn bindParam(old_values: *std.ArrayList(SavedBinding), env: *Env, name: []const 
             break;
         }
     }
+    const displaced = try env.replace(name, value);
     if (already_saved) {
-        // The current binding is ours from a previous trampoline iteration
-        if (env.get(name)) |cur| {
-            cur.deinit(env.allocator);
-            env.allocator.destroy(cur);
-        } else |_| {}
+        // The displaced binding is ours from a previous trampoline
+        // iteration; the currently-executing borrowed lambda must survive
+        if (displaced) |cur| {
+            if (cur == protected) {
+                env.deferFree(cur);
+            } else {
+                cur.deinit(env.allocator);
+                env.allocator.destroy(cur);
+            }
+        }
     } else {
-        const old_val = env.get(name) catch null;
-        try old_values.append(env.allocator, .{ .name = name, .value = old_val });
+        try old_values.append(env.allocator, .{ .name = name, .value = displaced });
     }
-    try env.put(name, value);
 }
 
 /// True when the head symbol names a special form (which is never a
 /// tail-callable function).
 fn isSpecialFormHead(head: *const Expr) bool {
     if (head.* != .symbol) return false;
-    const names = [_][]const u8{
-        "lambda",  "define", "defmacro", "if",    "let",        "letrec",  "matrix", "sum",
-        "product", "solve",  "dsolve",   "quote", "quasiquote", "unquote", "begin",  "cond",
-        "and",     "or",     "try",      "step",
-    };
-    for (names) |n| {
-        if (std.mem.eql(u8, head.symbol, n)) return true;
-    }
-    return false;
+    return special_forms.has(head.symbol);
 }
 
 /// Evaluates (matrix (row1...) (row2...) ...) without evaluating row contents
@@ -1557,16 +1703,13 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
 
         var i: i64 = start_int;
         while (i <= end_int) : (i += 1) {
-            // Free previous index binding if any (from previous iteration)
-            if (env.get(var_name)) |prev| {
-                prev.deinit(env.allocator);
-                env.allocator.destroy(prev);
-            } else |_| {}
-
-            // Bind variable
+            // Bind variable, displacing the previous iteration's binding
             const idx_expr = try env.allocator.create(Expr);
             idx_expr.* = .{ .number = @floatFromInt(i) };
-            try env.put(var_name, idx_expr);
+            if (try env.replace(var_name, idx_expr)) |prev| {
+                prev.deinit(env.allocator);
+                env.allocator.destroy(prev);
+            }
 
             // Evaluate body
             const term = try eval(body_expr, env);
@@ -1596,14 +1739,16 @@ fn evalSum(expr: *Expr, env: *Env) Error!*Expr {
         }
 
         // Restore old binding
-        if (env.get(var_name)) |current| {
-            current.deinit(env.allocator);
-            env.allocator.destroy(current);
-        } else |_| {}
-
         if (old_val) |old| {
-            try env.put(var_name, old);
+            if (try env.replace(var_name, old)) |current| {
+                current.deinit(env.allocator);
+                env.allocator.destroy(current);
+            }
         } else {
+            if (env.get(var_name)) |current| {
+                current.deinit(env.allocator);
+                env.allocator.destroy(current);
+            } else |_| {}
             _ = env.remove(var_name);
         }
 
@@ -1702,16 +1847,13 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
 
         var i: i64 = start_int;
         while (i <= end_int) : (i += 1) {
-            // Free previous index binding if any (from previous iteration)
-            if (env.get(var_name)) |prev| {
-                prev.deinit(env.allocator);
-                env.allocator.destroy(prev);
-            } else |_| {}
-
-            // Bind variable
+            // Bind variable, displacing the previous iteration's binding
             const idx_expr = try env.allocator.create(Expr);
             idx_expr.* = .{ .number = @floatFromInt(i) };
-            try env.put(var_name, idx_expr);
+            if (try env.replace(var_name, idx_expr)) |prev| {
+                prev.deinit(env.allocator);
+                env.allocator.destroy(prev);
+            }
 
             // Evaluate body
             const term = try eval(body_expr, env);
@@ -1741,14 +1883,16 @@ fn evalProduct(expr: *Expr, env: *Env) Error!*Expr {
         }
 
         // Restore old binding
-        if (env.get(var_name)) |current| {
-            current.deinit(env.allocator);
-            env.allocator.destroy(current);
-        } else |_| {}
-
         if (old_val) |old| {
-            try env.put(var_name, old);
+            if (try env.replace(var_name, old)) |current| {
+                current.deinit(env.allocator);
+                env.allocator.destroy(current);
+            }
         } else {
+            if (env.get(var_name)) |current| {
+                current.deinit(env.allocator);
+                env.allocator.destroy(current);
+            } else |_| {}
             _ = env.remove(var_name);
         }
 
@@ -2038,7 +2182,7 @@ fn callLambdaTraced(name: []const u8, lambda: *const Expr, arg_exprs: []*Expr, e
         out.flush() catch {};
     }
     trace_depth += 1;
-    const result = callLambda(lambda, arg_exprs, env) catch |err| {
+    const result = callLambda(lambda, arg_exprs, env, lambda) catch |err| {
         trace_depth -= 1;
         return err;
     };
@@ -2057,12 +2201,11 @@ fn callLambdaTraced(name: []const u8, lambda: *const Expr, arg_exprs: []*Expr, e
 fn restoreBindings(old_values: *std.ArrayList(SavedBinding), env: *Env) void {
     for (old_values.items) |item| {
         if (item.value) |old| {
-            const current = env.get(item.name) catch null;
+            const current = (env.replace(item.name, old) catch null) orelse null;
             if (current) |c| {
                 c.deinit(env.allocator);
                 env.allocator.destroy(c);
             }
-            env.put(item.name, old) catch {};
         } else {
             // Remove the binding
             if (env.get(item.name)) |current| {

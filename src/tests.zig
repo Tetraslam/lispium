@@ -47,6 +47,8 @@ comptime {
     _ = @import("tests/language.zig");
     _ = @import("tests/bigint.zig");
     _ = @import("tests/positions.zig");
+    _ = @import("pool.zig");
+    _ = @import("tests/dispatch.zig");
 }
 
 // Re-export helpers for any external use

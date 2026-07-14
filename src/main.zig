@@ -40,9 +40,14 @@ fn mainImpl(init: std.process.Init) !void {
     // recurse much deeper than the conservative library default
     evaluator.max_eval_depth = evaluator.MAX_EVAL_DEPTH;
 
-    // The CLI uses the fast thread-safe allocator; leak detection is
-    // covered by the test suite (which runs on std.testing.allocator).
-    const allocator = std.heap.smp_allocator;
+    // The CLI evaluates on this single thread, so all allocation goes
+    // through a lock-free free-list pool for the interpreter's small-block
+    // churn (Expr nodes), backed by the thread-safe allocator for
+    // everything else. Leak detection is covered by the test suite (which
+    // runs on std.testing.allocator).
+    var expr_pool = @import("pool.zig").InterpreterAllocator.init(std.heap.smp_allocator);
+    defer expr_pool.deinit();
+    const allocator = expr_pool.allocator();
     const io = init.io;
 
     var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
@@ -281,32 +286,54 @@ fn mainImpl(init: std.process.Init) !void {
             return;
         } else if (std.mem.eql(u8, cmd, "bench")) {
             // Parse bench options
-            var mode: bench.OutputMode = .pretty;
-            var quick = false;
+            var options: bench.Options = .{};
 
             while (args_it.next()) |arg| {
                 if (std.mem.eql(u8, arg, "--plain")) {
-                    mode = .plain;
+                    options.mode = .plain;
                 } else if (std.mem.eql(u8, arg, "--json")) {
-                    mode = .json;
+                    options.mode = .json;
                 } else if (std.mem.eql(u8, arg, "--quick") or std.mem.eql(u8, arg, "-q")) {
-                    quick = true;
+                    options.quick = true;
+                } else if (std.mem.eql(u8, arg, "--filter") or std.mem.eql(u8, arg, "-f")) {
+                    options.filter = args_it.next() orelse {
+                        try stderr.print("error: --filter needs a value\n", .{});
+                        return;
+                    };
+                } else if (std.mem.eql(u8, arg, "--save")) {
+                    options.save_path = args_it.next() orelse {
+                        try stderr.print("error: --save needs a file path\n", .{});
+                        return;
+                    };
+                } else if (std.mem.eql(u8, arg, "--compare")) {
+                    options.compare_path = args_it.next() orelse {
+                        try stderr.print("error: --compare needs a file path\n", .{});
+                        return;
+                    };
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     try stdout.print(
                         \\Usage: lispium bench [options]
                         \\
                         \\Options:
-                        \\  --plain    Output in plain CSV format
-                        \\  --json     Output in JSON format
-                        \\  --quick    Run fewer iterations (faster)
-                        \\  --help     Show this help
+                        \\  --plain          Output in plain CSV format
+                        \\  --json           Output in JSON format
+                        \\  --quick, -q      Run fewer iterations (faster)
+                        \\  --filter, -f S   Only benchmarks whose name/category contains S
+                        \\  --save FILE      Save results as JSON (a baseline)
+                        \\  --compare FILE   Show per-benchmark deltas against a saved baseline
+                        \\  --help           Show this help
+                        \\
+                        \\Typical performance workflow:
+                        \\  lispium bench --save before.json
+                        \\  ... make changes ...
+                        \\  lispium bench --compare before.json
                         \\
                     , .{});
                     return;
                 }
             }
 
-            try bench.run(allocator, io, mode, quick);
+            try bench.run(allocator, io, options);
             return;
         }
     }
