@@ -192,7 +192,18 @@
           (concat "You are carrying: " (words (st-inv st))))))
 
 (define help-text
-  "Commands: look | (go DIR) | (take ITEM) | (drop ITEM) | inventory | quit")
+  (concat "Commands are s-expressions, one per line:\n"
+          "  bare words:   look   inventory   help   quit\n"
+          "  with parens:  (go east)   (take lantern)   (drop lantern)"))
+
+; A bare `go` (etc.) means someone typed "go east" without parens; the
+; rest of the line is lost to the reader, so say exactly what to type.
+(define (paren-hint verb example)
+  (concat "Almost! Wrap the command in parens, e.g. "
+          example
+          " -- bare '"
+          (number->string verb)
+          "' loses its target."))
 
 ; The dispatcher: a command is a symbol or an s-expression
 (define (do-command st cmd)
@@ -201,6 +212,11 @@
     ((= cmd 'inventory) (cmd-inventory st))
     ((= cmd 'i) (cmd-inventory st))
     ((= cmd 'help) (list st help-text))
+    ; Bare verbs that needed parens get a pointed hint, not just help:
+    ; (read) parses one expression, so "go east" arrives as just `go`
+    ((= cmd 'go) (list st (paren-hint 'go "(go east)")))
+    ((= cmd 'take) (list st (paren-hint 'take "(take lantern)")))
+    ((= cmd 'drop) (list st (paren-hint 'drop "(drop lantern)")))
     ((list? cmd)
       (cond
         ((= (car cmd) 'go) (cmd-go st (nth cmd 1)))
