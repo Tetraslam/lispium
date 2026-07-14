@@ -1,6 +1,6 @@
 # Maintainer: Tetraslam <tetraslam@users.noreply.github.com>
 pkgname=lispium-bin
-pkgver=0.11.0
+pkgver=0.12.0
 pkgrel=1
 pkgdesc="A Symbolic Computer Algebra System written in Zig"
 arch=('x86_64')
@@ -10,7 +10,7 @@ depends=()
 provides=('lispium')
 conflicts=('lispium')
 source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/Tetraslam/lispium/releases/download/v${pkgver}/lispium-linux-x86_64.tar.gz")
-sha256sums_x86_64=('2363efeccf89f8f1eb96a921a04a4d38ffcd0f4a16b47c547e818a8f5a49d45d')
+sha256sums_x86_64=('473449d40915b1d3869949a1df56e83b108353d659927710d0ac92607acbce10')
 
 package() {
     install -Dm755 "${srcdir}/lispium" "${pkgdir}/usr/bin/lispium"

@@ -1,28 +1,28 @@
 class Lispium < Formula
   desc "Symbolic Computer Algebra System written in Zig"
   homepage "https://github.com/Tetraslam/lispium"
-  version "0.11.0"
+  version "0.12.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/Tetraslam/lispium/releases/download/v0.11.0/lispium-macos-aarch64.tar.gz"
-      sha256 "9e1ca13bb1c3472c9feb7fc2fe5df8485e1a448c11c604d3ea1a19215d223a24"
+      url "https://github.com/Tetraslam/lispium/releases/download/v0.12.0/lispium-macos-aarch64.tar.gz"
+      sha256 "8d872df6189567a9e7a94872427ef425880dfdfd2e3c9a27a0e573544dbd9307"
     end
     on_intel do
-      url "https://github.com/Tetraslam/lispium/releases/download/v0.11.0/lispium-macos-x86_64.tar.gz"
-      sha256 "001fdd95e976be522ddc90107fd1622591b206d8878921c8d6c8ab7d954205e3"
+      url "https://github.com/Tetraslam/lispium/releases/download/v0.12.0/lispium-macos-x86_64.tar.gz"
+      sha256 "89ea92ff7b1907f1d71a367d5f31dc986b9368699211de01086adc10cc8202bf"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/Tetraslam/lispium/releases/download/v0.11.0/lispium-linux-aarch64.tar.gz"
-      sha256 "5b59833eaf8a6f865bb1c853fffbd9c313c008ca8072d4eb7eaf49f8fbbb86bf"
+      url "https://github.com/Tetraslam/lispium/releases/download/v0.12.0/lispium-linux-aarch64.tar.gz"
+      sha256 "8b9cb4a361219ac95260774b53029f08fbdb0ce23e4efbfb53a6090e4daf8485"
     end
     on_intel do
-      url "https://github.com/Tetraslam/lispium/releases/download/v0.11.0/lispium-linux-x86_64.tar.gz"
-      sha256 "2363efeccf89f8f1eb96a921a04a4d38ffcd0f4a16b47c547e818a8f5a49d45d"
+      url "https://github.com/Tetraslam/lispium/releases/download/v0.12.0/lispium-linux-x86_64.tar.gz"
+      sha256 "473449d40915b1d3869949a1df56e83b108353d659927710d0ac92607acbce10"
     end
   end
 
